@@ -1,0 +1,246 @@
+services:
+
+
+  backend:
+
+    container_name: fleet-backend
+
+
+    build:
+      context: .
+      dockerfile: Dockerfile
+
+
+    restart: unless-stopped
+
+
+    env_file:
+      - .env
+
+
+    environment:
+
+      DB_HOST: timescaledb
+      DB_PORT: 5432
+
+      MQTT_HOST: emqx
+      MQTT_PORT: 1883
+
+
+    ports:
+
+      - "8001:8000"
+
+
+    depends_on:
+
+      timescaledb:
+        condition: service_healthy
+
+
+      emqx:
+        condition: service_healthy
+
+
+
+    healthcheck:
+
+      test:
+        [
+          "CMD",
+          "curl",
+          "-f",
+          "http://localhost:8000/"
+        ]
+
+      interval: 30s
+
+      timeout: 10s
+
+      retries: 5
+
+      start_period: 40s
+
+
+
+    networks:
+
+      - fleet-network
+
+
+
+
+
+  timescaledb:
+
+
+    container_name: fleet-timescaledb
+
+
+    image:
+      timescale/timescaledb:latest-pg16
+
+
+    restart: unless-stopped
+
+
+
+    environment:
+
+      POSTGRES_DB:
+        ${DB_NAME}
+
+      POSTGRES_USER:
+        ${DB_USER}
+
+      POSTGRES_PASSWORD:
+        ${DB_PASS}
+
+
+
+    ports:
+
+      - "5435:5432"
+
+
+
+    volumes:
+
+
+      - timescale_data:/var/lib/postgresql/data
+
+
+      - ./docker/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql
+
+
+
+    healthcheck:
+
+
+      test:
+
+        [
+          "CMD-SHELL",
+          "pg_isready -U ${DB_USER} -d ${DB_NAME}"
+        ]
+
+
+      interval: 10s
+
+      timeout: 5s
+
+      retries: 10
+
+
+
+    networks:
+
+      - fleet-network
+
+
+
+
+
+
+  emqx:
+
+
+    container_name: fleet-emqx
+
+
+    image:
+      emqx/emqx:latest
+
+
+    restart: unless-stopped
+
+
+    # ────────────────────────────────────────────────────────────
+    # FDD §13 Security — "MQTT username/password per device"
+    # ────────────────────────────────────────────────────────────
+    # TODO (infra, ไม่ใช่ scope ของโค้ดนี้): ตั้งค่า EMQX
+    # Authentication/ACL ให้ตรวจสอบ credential ของแต่ละ device จาก
+    # ตาราง devices.mqtt_username / devices.mqtt_password_hash
+    # (เช่นผ่าน EMQX "Authentication" → PostgreSQL backend หรือ
+    # HTTP auth webhook ที่ query ตาราง devices) แทนการใช้
+    # MQTT_USER/MQTT_PASS ตัวเดียวร่วมกันทุก device ปัจจุบัน
+    # ค่า MQTT_USER/MQTT_PASS ใน .env ยังคงใช้เฉพาะฝั่ง backend
+    # subscriber (คนละบทบาทกับ credential ที่ device ใช้ publish)
+    # ────────────────────────────────────────────────────────────
+
+
+    ports:
+
+
+      - "1884:1883"
+
+      - "18084:18083"
+
+      # FDD §13 — "MQTT over TLS 1.2" — TLS listener (เพิ่มใหม่)
+      # ไม่ลบ 1883/1884 (plain) เดิม — ใช้คู่ขนานกันได้
+      - "8883:8883"
+
+
+
+    volumes:
+
+
+      - emqx_data:/opt/emqx/data
+
+      - emqx_log:/opt/emqx/log
+
+
+
+    healthcheck:
+
+
+      test:
+
+        [
+          "CMD",
+          "/opt/emqx/bin/emqx",
+          "ctl",
+          "status"
+        ]
+
+
+      interval: 30s
+
+      timeout: 10s
+
+      retries: 10
+
+      start_period: 60s
+
+
+
+    networks:
+
+      - fleet-network
+
+
+
+
+
+networks:
+
+
+  fleet-network:
+
+    driver: bridge
+
+
+
+
+
+
+volumes:
+
+
+  timescale_data:
+
+
+  emqx_data:
+
+
+  emqx_log:
