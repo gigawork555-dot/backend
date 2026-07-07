@@ -109,8 +109,22 @@ def sse_pool():
 
 @pytest.fixture
 def sse_client(sse_pool, monkeypatch):
-    # [FIX] no more real 5-second waits per loop iteration
-    monkeypatch.setattr(routes_vehicles.asyncio, "sleep", AsyncMock())
+    # [FIX] เดิม: monkeypatch.setattr(routes_vehicles.asyncio, "sleep", AsyncMock())
+    # ปัญหา: AsyncMock() เวลาถูก await จะ resolve โดยไม่มี "real checkpoint"
+    # ให้ event loop สลับงาน (ไม่เหมือน asyncio.sleep(0) ของจริงที่ยัง
+    # yield control กลับ) ผลคือ event_generator() วน while True กลืน
+    # thread ทั้งเส้นแบบ busy-loop ไม่มีจังหวะให้ ASGI transport ส่ง
+    # chunk แรกออกไปให้ TestClient อ่านได้เลย -> ค้างตลอดไป
+    #
+    # แก้โดยใช้ async function ธรรมดาที่เรียก asyncio.sleep(0) ของจริง
+    # แทน — ได้ checkpoint จริงทุกครั้งที่ถูก await แต่ยังคง "เร็วกว่า"
+    # asyncio.sleep(5) จริงมาก (แทบจะ 0 วินาที) พอสำหรับเทสต์
+    import asyncio as _asyncio
+
+    async def _fast_sleep(seconds):
+        await _asyncio.sleep(0)
+
+    monkeypatch.setattr(routes_vehicles.asyncio, "sleep", _fast_sleep)
 
     app = FastAPI()
     app.include_router(routes_vehicles.fleet_router)
@@ -119,7 +133,6 @@ def sse_client(sse_pool, monkeypatch):
         return sse_pool
 
     app.dependency_overrides[get_db_pool] = _override_get_db_pool
-
     return TestClient(app, headers={"APIKEY": VALID_KEY})
 
 
