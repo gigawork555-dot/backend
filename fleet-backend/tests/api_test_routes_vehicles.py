@@ -1,4 +1,4 @@
-# tests/test_routes_vehicles.py
+# tests/api_test_routes_vehicles.py
 """
 Coverage target: app/api/routes_vehicles.py
 
@@ -7,20 +7,34 @@ Endpoints covered:
   - GET /api/v1/vehicles/{vehicle_id}/device    : device binding info
   - GET /api/v1/vehicles/{vehicle_id}/location  : latest GPS/telemetry
   - GET /api/v1/vehicles/{vehicle_id}/trips     : paginated trip history
-  - GET /api/v1/fleet/live                      : SSE stream (auth-only smoke test)
+  - GET /api/v1/fleet/live                      : SSE stream
 
 Testing strategy
 -----------------
-Like routes_drivers.py, this module calls `get_db_connection()` directly
+Like routes_drivers.py, most endpoints call `get_db_connection()` directly
 (wrapping asyncpg.connect()) rather than using FastAPI's Depends(). We
 monkeypatch `routes_vehicles.get_db_connection` with an AsyncMock. All
 non-SSE endpoints require the `APIKEY` header via Security(verify_api_key).
 
-The SSE endpoint (`/api/v1/fleet/live`) uses `Security(api_key_header)`
-directly (not the `verify_api_key` dependency function) and opens an
-infinite streaming generator — we only verify the auth-rejection path
-and that a 200 with the correct content-type is returned; we do not try
-to fully drain the infinite generator.
+[FIX] The SSE endpoint (`/api/v1/fleet/live`) was refactored in production
+code to use the shared pool via `Depends(get_db_pool)` instead of opening
+a raw `asyncpg.connect()` inside an infinite loop every 5 seconds. That
+change is what makes this endpoint properly testable:
+
+  1. We override the `get_db_pool` FastAPI dependency (same pattern as
+     test_routes_trips.py / test_routes_config.py) with a mock pool whose
+     `.fetch()` returns instantly.
+  2. We monkeypatch `routes_vehicles.asyncio.sleep` to resolve immediately
+     instead of actually waiting 5 real seconds per loop iteration.
+  3. We wrap the stream read in `pytest.mark.timeout` as a defense-in-depth
+     safety net, in case a future change reintroduces a real infinite wait
+     — this prevents the whole test suite from hanging indefinitely again.
+
+Without (1)+(2), the previous test used to hang because the generator was
+a genuine infinite loop performing real DB connects and real 5-second
+sleeps in the background, even after the test's `with` block exited —
+TestClient's context manager does not forcibly kill the server-side async
+generator; it merely stops reading from it.
 """
 
 from __future__ import annotations
@@ -47,12 +61,13 @@ if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
 from app.api import routes_vehicles  # noqa: E402
+from app.database import get_db_pool  # noqa: E402
 
 VALID_KEY = "ktc-fleet-2026-secret"
 
 
 # =================================================================
-# Fixtures
+# Fixtures — REST endpoints (raw asyncpg.connect() pattern)
 # =================================================================
 
 def _make_conn(fetch_return=None, fetchrow_return=None, fetchval_return=0):
@@ -77,6 +92,34 @@ def client(conn, monkeypatch):
     app = FastAPI()
     app.include_router(routes_vehicles.router)
     app.include_router(routes_vehicles.fleet_router)
+    return TestClient(app, headers={"APIKEY": VALID_KEY})
+
+
+# =================================================================
+# Fixtures — SSE endpoint (shared pool via Depends(get_db_pool))
+# =================================================================
+
+@pytest.fixture
+def sse_pool():
+    """Mock pool whose .fetch() resolves instantly with an empty list."""
+    pool = MagicMock()
+    pool.fetch = AsyncMock(return_value=[])
+    return pool
+
+
+@pytest.fixture
+def sse_client(sse_pool, monkeypatch):
+    # [FIX] no more real 5-second waits per loop iteration
+    monkeypatch.setattr(routes_vehicles.asyncio, "sleep", AsyncMock())
+
+    app = FastAPI()
+    app.include_router(routes_vehicles.fleet_router)
+
+    async def _override_get_db_pool():
+        return sse_pool
+
+    app.dependency_overrides[get_db_pool] = _override_get_db_pool
+
     return TestClient(app, headers={"APIKEY": VALID_KEY})
 
 
@@ -279,7 +322,7 @@ def test_get_vehicle_trips_db_error_returns_500(client, conn):
 
 
 # =================================================================
-# GET /api/v1/fleet/live (SSE) — auth smoke test only
+# GET /api/v1/fleet/live (SSE)
 # =================================================================
 
 def test_fleet_live_rejects_missing_key():
@@ -292,12 +335,37 @@ def test_fleet_live_rejects_missing_key():
     assert resp.status_code == 403
 
 
-def test_fleet_live_accepts_valid_key_and_streams(client):
-    # Use stream=True equivalent via context manager so we don't block
-    # trying to read an infinite SSE generator to completion.
-    with client.stream("GET", "/api/v1/fleet/live") as resp:
+@pytest.mark.timeout(10)  # safety net — should return almost instantly now
+def test_fleet_live_accepts_valid_key_and_streams(sse_client, sse_pool):
+    """
+    [FIX] Uses the `sse_client` fixture (mocked pool + mocked asyncio.sleep)
+    instead of the real DB + real 5s sleep. The stream now yields its first
+    chunk immediately, so reading one chunk and closing is fast and
+    deterministic — no more relying on TestClient to somehow kill an
+    infinite background generator.
+    """
+    with sse_client.stream("GET", "/api/v1/fleet/live") as resp:
         assert resp.status_code == 200
         assert "text/event-stream" in resp.headers["content-type"]
+
+        # read exactly one SSE chunk to prove data actually flows,
+        # then exit the `with` block (closes the connection on our side)
+        chunk_iter = resp.iter_lines()
+        first_line = next(chunk_iter)
+        assert first_line.startswith("data:")
+
+    sse_pool.fetch.assert_awaited()
+
+
+def test_fleet_live_wrong_key_rejected_before_pool_used(sse_client, sse_pool, monkeypatch):
+    monkeypatch.setattr(
+        sse_client, "headers", {**sse_client.headers, "APIKEY": "wrong-key"}
+    )
+
+    resp = sse_client.get("/api/v1/fleet/live", headers={"APIKEY": "wrong-key"})
+
+    assert resp.status_code == 403
+    sse_pool.fetch.assert_not_awaited()
 
 
 if __name__ == "__main__":
