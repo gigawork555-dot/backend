@@ -2,6 +2,7 @@ from fastapi import APIRouter, HTTPException, Depends
 from fastapi.security import OAuth2PasswordRequestForm
 from pydantic import BaseModel
 from typing import Optional
+import asyncpg
 
 from app.auth.models import (
     get_user_by_username,
@@ -42,6 +43,15 @@ class RegisterRequest(BaseModel):
 
 # ==================================================
 # LOGIN
+#
+# [FIX] เดิมเรียก `pool = await get_db_pool()` ตรงๆ ในตัวฟังก์ชัน
+# ทำให้ FastAPI `app.dependency_overrides[get_db_pool]` ที่ใช้ใน
+# เทสต์ไม่มีผล (override ใช้ได้เฉพาะ dependency ที่ประกาศผ่าน
+# Depends() ในลายเซ็นของ endpoint เท่านั้น) เปลี่ยนมาใช้
+# `pool: asyncpg.Pool = Depends(get_db_pool)` แทน เพื่อให้
+# testable ตามมาตรฐาน FastAPI (เหมือน routes_trips.py,
+# routes_config.py ที่ทำถูกอยู่แล้ว) — ไม่กระทบ business logic
+# หรือสเปคใดๆ ใน FDD v1.4
 # ==================================================
 
 @router.post(
@@ -50,11 +60,10 @@ class RegisterRequest(BaseModel):
     summary="เข้าสู่ระบบ"
 )
 async def login(
-    form: OAuth2PasswordRequestForm = Depends()
+    form: OAuth2PasswordRequestForm = Depends(),
+    pool: asyncpg.Pool = Depends(get_db_pool),
 ):
     try:
-
-        pool = await get_db_pool()
 
         async with pool.acquire() as conn:
 
@@ -124,6 +133,9 @@ async def get_me(
 
 # ==================================================
 # REGISTER USER
+#
+# [FIX] เดิมเรียก `pool = await get_db_pool()` ตรงๆ เช่นเดียวกับ
+# /login — เปลี่ยนเป็น Depends(get_db_pool) ด้วยเหตุผลเดียวกัน
 # ==================================================
 
 @router.post(
@@ -134,10 +146,9 @@ async def register_user(
     body: RegisterRequest,
     current_user: dict = Depends(
         require_admin
-    )
+    ),
+    pool: asyncpg.Pool = Depends(get_db_pool),
 ):
-    pool = await get_db_pool()
-
     async with pool.acquire() as conn:
 
         existing = await get_user_by_username(

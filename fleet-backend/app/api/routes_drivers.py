@@ -364,10 +364,11 @@ async def get_driver_score(
         )
 
         await conn.close()
-
-        avg = float(summary["avg_score"] or 0)
+        # summary อาจเป็น None ถ้าพนักงานไม่มี trip เลยในเงื่อนไข query
+        # (WHERE driver_id = $1 AND trip_end IS NOT NULL อาจไม่ match แถวใด)
+        avg = float((summary["avg_score"] if summary else 0) or 0)
         tier, bonus_pct = _calc_tier(avg, tier_a_min, tier_b_min, tier_c_min)
-
+        
         # FDD §12.3: Tier D → แจ้งเตือน HR
         hr_alert = tier == "D"
 
