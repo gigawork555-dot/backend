@@ -16,25 +16,39 @@ Like routes_drivers.py, most endpoints call `get_db_connection()` directly
 monkeypatch `routes_vehicles.get_db_connection` with an AsyncMock. All
 non-SSE endpoints require the `APIKEY` header via Security(verify_api_key).
 
-[FIX] The SSE endpoint (`/api/v1/fleet/live`) was refactored in production
-code to use the shared pool via `Depends(get_db_pool)` instead of opening
-a raw `asyncpg.connect()` inside an infinite loop every 5 seconds. That
-change is what makes this endpoint properly testable:
+[FIX HISTORY]
 
-  1. We override the `get_db_pool` FastAPI dependency (same pattern as
-     test_routes_trips.py / test_routes_config.py) with a mock pool whose
-     `.fetch()` returns instantly.
-  2. We monkeypatch `routes_vehicles.asyncio.sleep` to resolve immediately
-     instead of actually waiting 5 real seconds per loop iteration.
-  3. We wrap the stream read in `pytest.mark.timeout` as a defense-in-depth
-     safety net, in case a future change reintroduces a real infinite wait
-     — this prevents the whole test suite from hanging indefinitely again.
+Round 1 (RecursionError):
+  `asyncio` is a singleton module — `routes_vehicles.asyncio` IS the same
+  object as the real `asyncio` module. Patching `routes_vehicles.asyncio.sleep`
+  therefore patches the real `asyncio.sleep` globally. The old `_fast_sleep`
+  looked up `asyncio.sleep` fresh on every call, so once patched it ended up
+  calling itself forever -> RecursionError.
 
-Without (1)+(2), the previous test used to hang because the generator was
-a genuine infinite loop performing real DB connects and real 5-second
-sleeps in the background, even after the test's `with` block exited —
-TestClient's context manager does not forcibly kill the server-side async
-generator; it merely stops reading from it.
+Round 2 (Timeout, this fix):
+  Starlette's TestClient runs the ASGI app to completion in a background
+  thread BEFORE handing any response back to the test — even when called
+  via `client.stream(...)`. The `/api/v1/fleet/live` endpoint is a genuine
+  `while True:` infinite SSE generator by design, so `app()` never returns
+  on its own -> the previous "just make sleep resolve fast" patch caused
+  the loop to spin forever, timing out at pytest-timeout's limit.
+
+  Fix: make the patched `asyncio.sleep` raise `asyncio.CancelledError`
+  immediately after the first fetch+yield cycle. This exactly matches the
+  "client disconnected" code path already handled in
+  routes_vehicles.py's `event_generator()`:
+
+      try:
+          while True:
+              ...
+              yield f"data: {data}\n\n"
+              await asyncio.sleep(5)      # <- patched to raise CancelledError here
+      except asyncio.CancelledError:
+          logger.info("Client disconnected — stream closed")
+          return                          # <- generator finishes -> app() returns
+
+  With this, exactly one real SSE chunk is produced, then the ASGI call
+  completes normally instead of hanging.
 """
 
 from __future__ import annotations
@@ -109,22 +123,21 @@ def sse_pool():
 
 @pytest.fixture
 def sse_client(sse_pool, monkeypatch):
-    # [FIX] เดิม: monkeypatch.setattr(routes_vehicles.asyncio, "sleep", AsyncMock())
-    # ปัญหา: AsyncMock() เวลาถูก await จะ resolve โดยไม่มี "real checkpoint"
-    # ให้ event loop สลับงาน (ไม่เหมือน asyncio.sleep(0) ของจริงที่ยัง
-    # yield control กลับ) ผลคือ event_generator() วน while True กลืน
-    # thread ทั้งเส้นแบบ busy-loop ไม่มีจังหวะให้ ASGI transport ส่ง
-    # chunk แรกออกไปให้ TestClient อ่านได้เลย -> ค้างตลอดไป
-    #
-    # แก้โดยใช้ async function ธรรมดาที่เรียก asyncio.sleep(0) ของจริง
-    # แทน — ได้ checkpoint จริงทุกครั้งที่ถูก await แต่ยังคง "เร็วกว่า"
-    # asyncio.sleep(5) จริงมาก (แทบจะ 0 วินาที) พอสำหรับเทสต์
+    # [FIX — Timeout] TestClient runs the ASGI app to completion before
+    # returning anything, so a genuinely infinite `while True` SSE generator
+    # will hang the test forever. We patch `asyncio.sleep` (called once per
+    # loop iteration inside event_generator()) to raise CancelledError right
+    # after the first chunk is yielded — mirroring "client disconnected",
+    # which the endpoint already handles gracefully by returning from the
+    # generator. This lets exactly one chunk be produced and the request
+    # complete deterministically instead of spinning until pytest-timeout
+    # kills it.
     import asyncio as _asyncio
 
-    async def _fast_sleep(seconds):
-        await _asyncio.sleep(0)
+    async def _stop_after_first_chunk(seconds):
+        raise _asyncio.CancelledError()
 
-    monkeypatch.setattr(routes_vehicles.asyncio, "sleep", _fast_sleep)
+    monkeypatch.setattr(routes_vehicles.asyncio, "sleep", _stop_after_first_chunk)
 
     app = FastAPI()
     app.include_router(routes_vehicles.fleet_router)
@@ -351,18 +364,15 @@ def test_fleet_live_rejects_missing_key():
 @pytest.mark.timeout(10)  # safety net — should return almost instantly now
 def test_fleet_live_accepts_valid_key_and_streams(sse_client, sse_pool):
     """
-    [FIX] Uses the `sse_client` fixture (mocked pool + mocked asyncio.sleep)
-    instead of the real DB + real 5s sleep. The stream now yields its first
-    chunk immediately, so reading one chunk and closing is fast and
-    deterministic — no more relying on TestClient to somehow kill an
-    infinite background generator.
+    Uses the `sse_client` fixture (mocked pool + a patched asyncio.sleep
+    that raises CancelledError after the first chunk). The stream yields
+    its one chunk, the generator returns cleanly, and the ASGI call
+    completes — no more hanging until pytest-timeout intervenes.
     """
     with sse_client.stream("GET", "/api/v1/fleet/live") as resp:
         assert resp.status_code == 200
         assert "text/event-stream" in resp.headers["content-type"]
 
-        # read exactly one SSE chunk to prove data actually flows,
-        # then exit the `with` block (closes the connection on our side)
         chunk_iter = resp.iter_lines()
         first_line = next(chunk_iter)
         assert first_line.startswith("data:")
