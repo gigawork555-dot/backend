@@ -386,12 +386,32 @@ fleet_router = APIRouter(prefix="/api/v1/fleet", tags=["Fleet Live"])
 
 @fleet_router.get("/live", summary="SSE real-time ตำแหน่งรถทุกคัน ส่งทุก 5 วินาที")
 async def fleet_live(
-    api_key: str = Security(api_key_header),
+    # [FIX] เปลี่ยนจาก Security(api_key_header) → Security(verify_api_key)
+    #
+    # สาเหตุที่ต้องแก้: FastAPI resolve ทุก Depends/Security parameter
+    # "ตามลำดับที่ประกาศในลายเซ็นฟังก์ชัน" ก่อนจะรันบอดี้ฟังก์ชันเสมอ
+    # ของเดิม api_key_header แค่ "อ่านค่า header" แต่ไม่ raise เอง
+    # ทำให้ FastAPI resolve พารามิเตอร์ถัดไปคือ pool = Depends(get_db_pool)
+    # ต่อทันที ทั้งที่ API key ยังไม่ถูกตรวจสอบเลย
+    #
+    # ถ้าตอนเทสต์ (หรือ production ตอน pool ยังไม่ init) ไม่ได้ override
+    # get_db_pool ไว้ → get_db_pool() จริงจะ raise RuntimeError
+    # ("Database pool is not initialized") ซึ่งเป็น exception ที่ไม่ถูกจับ
+    # หลุดออกมาแทนที่จะได้ 403 ตามที่ควรเป็น → เทสต์ที่ยิง request แบบ
+    # ไม่มี header เลย (test_fleet_live_rejects_missing_key) จึง FAILED
+    # ด้วย unhandled exception แทนที่จะได้ 403
+    #
+    # verify_api_key() (ประกาศไว้ในไฟล์นี้แล้ว ใช้ร่วมกับ endpoint อื่น)
+    # raise HTTPException(403) ที่ "ระดับ dependency" ก่อน pool จะถูก
+    # resolve เลย — dependency ที่ raise จะ short-circuit ทันที ไม่ไป
+    # แตะ dependency ถัดไปในลำดับพารามิเตอร์
+    api_key: str = Security(verify_api_key),
     pool: asyncpg.Pool = Depends(get_db_pool),
 ):
     """Server-Sent Events stream — ข้อมูลทุก 5 วินาที (Swagger จะหมุนตลอด ปกติของ SSE)"""
-    if api_key != API_KEY:
-        raise HTTPException(status_code=403, detail="API Key ไม่ถูกต้อง")
+    # [FIX] ลบ manual check `if api_key != API_KEY: raise HTTPException(...)`
+    # ออกจากตรงนี้ทั้งหมด — verify_api_key() จัดการให้แล้วตั้งแต่ระดับ
+    # dependency ด้านบน ไม่ต้องเช็คซ้ำในบอดี้ฟังก์ชันอีก
 
     async def event_generator():
         try:
@@ -411,15 +431,12 @@ async def fleet_live(
                     data = json.dumps([dict(r) for r in rows], default=str)
                     yield f"data: {data}\n\n"
                 except asyncio.CancelledError:
-                    # client ตัดการเชื่อมต่อระหว่าง query — ปิด stream สะอาด
                     raise
                 except Exception as e:
                     yield f"data: {json.dumps({'error': str(e)})}\n\n"
 
                 await asyncio.sleep(5)
         except asyncio.CancelledError:
-            # client ปิด stream (เช่น TestClient ออกจาก `with` block,
-            # หรือ browser ปิดแท็บ) — จบ generator ทันที ไม่ต้อง log error
             logger.info("[fleet/live] Client disconnected — stream closed")
             return
 
