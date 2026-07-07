@@ -2,7 +2,7 @@
 from datetime import datetime
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Security, Query
+from fastapi import APIRouter, HTTPException, Security, Query, Depends
 from fastapi.security import APIKeyHeader
 from fastapi.responses import StreamingResponse
 import asyncpg
@@ -10,6 +10,7 @@ import asyncio
 import json
 import logging
 from app.config import settings
+from app.database import get_db_pool
 
 logger = logging.getLogger(__name__)
 
@@ -358,40 +359,69 @@ async def get_vehicle_trips(
 
 # ============================================================
 # GET /api/v1/fleet/live — SSE real-time
+#
+# [FIX — สอดคล้อง FDD §11.1 + §13 Availability]
+#
+# ปัญหาเดิม:
+#   - ทุกรอบ loop (ทุก 5 วินาที) เปิด asyncpg.connect() ใหม่ตรงๆ
+#     แทนที่จะใช้ shared pool ที่ FDD §11.1 กำหนดไว้ว่า Database
+#     (TimescaleDB) เป็นทรัพยากรกลางที่ทุก service ใช้ร่วมกัน
+#   - ไม่มีการจัดการ asyncio.CancelledError เมื่อ client ตัดการ
+#     เชื่อมต่อ (ปิดแท็บ / ปิด SSE stream) ทำให้ generator relies
+#     เฉพาะ garbage collection แทนที่จะ cleanup ทันที เสี่ยง
+#     connection leak เมื่อรันจริงระยะยาว กระทบ §13 "uptime ≥ 99.5%"
+#   - ทำให้เทสต์ที่เปิด/ปิด stream อย่างรวดเร็ว (เช่น TestClient
+#     .stream() context manager) ค้างนาน เพราะ event loop ยังพยายาม
+#     เปิด DB connection ใหม่และรอ asyncio.sleep(5) อยู่เบื้องหลัง
+#     แม้ context manager ฝั่งเทสต์จะออกจาก `with` ไปแล้ว
+#
+# แก้ไข:
+#   1. ใช้ pool กลางจาก app.database.get_db_pool() แทน asyncpg.connect()
+#      ใหม่ทุกรอบ — ลด overhead การเปิด/ปิด connection ทุก 5 วิ
+#   2. ครอบ loop ด้วย try/except asyncio.CancelledError เพื่อ cleanup
+#      ทันทีเมื่อ client ตัดการเชื่อมต่อ แทนที่จะปล่อยให้ loop วนต่อ
 # ============================================================
 fleet_router = APIRouter(prefix="/api/v1/fleet", tags=["Fleet Live"])
 
 
 @fleet_router.get("/live", summary="SSE real-time ตำแหน่งรถทุกคัน ส่งทุก 5 วินาที")
-async def fleet_live(api_key: str = Security(api_key_header)):
+async def fleet_live(
+    api_key: str = Security(api_key_header),
+    pool: asyncpg.Pool = Depends(get_db_pool),
+):
     """Server-Sent Events stream — ข้อมูลทุก 5 วินาที (Swagger จะหมุนตลอด ปกติของ SSE)"""
     if api_key != API_KEY:
         raise HTTPException(status_code=403, detail="API Key ไม่ถูกต้อง")
 
     async def event_generator():
-        while True:
-            try:
-                conn = await asyncpg.connect(
-                    user=settings.DB_USER, password=settings.DB_PASS,
-                    database=settings.DB_NAME, host=settings.DB_HOST, port=settings.DB_PORT
-                )
-                rows = await conn.fetch("""
-                    SELECT us.vehicle_id, us.device_id,
-                           t.lat, t.lon, t.speed, t.ignition, t.ts
-                    FROM update_status us
-                    LEFT JOIN LATERAL (
-                        SELECT lat, lon, speed, ignition, ts
-                        FROM telemetry_raw WHERE device_id = us.device_id
-                        ORDER BY ts DESC LIMIT 1
-                    ) t ON true
-                    ORDER BY us.vehicle_id
-                """)
-                await conn.close()
-                data = json.dumps([dict(r) for r in rows], default=str)
-                yield f"data: {data}\n\n"
-            except Exception as e:
-                yield f"data: {json.dumps({'error': str(e)})}\n\n"
-            await asyncio.sleep(5)
+        try:
+            while True:
+                try:
+                    rows = await pool.fetch("""
+                        SELECT us.vehicle_id, us.device_id,
+                               t.lat, t.lon, t.speed, t.ignition, t.ts
+                        FROM update_status us
+                        LEFT JOIN LATERAL (
+                            SELECT lat, lon, speed, ignition, ts
+                            FROM telemetry_raw WHERE device_id = us.device_id
+                            ORDER BY ts DESC LIMIT 1
+                        ) t ON true
+                        ORDER BY us.vehicle_id
+                    """)
+                    data = json.dumps([dict(r) for r in rows], default=str)
+                    yield f"data: {data}\n\n"
+                except asyncio.CancelledError:
+                    # client ตัดการเชื่อมต่อระหว่าง query — ปิด stream สะอาด
+                    raise
+                except Exception as e:
+                    yield f"data: {json.dumps({'error': str(e)})}\n\n"
+
+                await asyncio.sleep(5)
+        except asyncio.CancelledError:
+            # client ปิด stream (เช่น TestClient ออกจาก `with` block,
+            # หรือ browser ปิดแท็บ) — จบ generator ทันที ไม่ต้อง log error
+            logger.info("[fleet/live] Client disconnected — stream closed")
+            return
 
     return StreamingResponse(
         event_generator(),
