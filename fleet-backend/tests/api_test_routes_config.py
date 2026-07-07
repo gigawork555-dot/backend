@@ -50,10 +50,10 @@ os.environ.setdefault("MQTT_HOST", "localhost")
 os.environ.setdefault("MQTT_PORT", "1883")
 os.environ.setdefault("MQTT_TOPIC", "test/topic")
 
-import pytest
-from unittest.mock import AsyncMock, MagicMock
-from fastapi import FastAPI
-from fastapi.testclient import TestClient
+import pytest  # noqa: E402
+from unittest.mock import AsyncMock, MagicMock  # noqa: E402
+from fastapi import FastAPI  # noqa: E402
+from fastapi.testclient import TestClient  # noqa: E402
 
 # ── Path bootstrap (เหมือน test_score_calculator.py เดิมในโปรเจค) ──
 _REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -465,7 +465,7 @@ def test_register_device_batch_invalid_device_id_in_list_returns_422(client):
 # =================================================================
 
 def _vehicle_update_payload(vehicle_id=101, new_device_id="KTC-001",
-                             old_device_id=None, driver_id=None):
+                            old_device_id=None, driver_id=None):
     payload = {
         "vehicle_id": vehicle_id,
         "new_device_id": new_device_id,

@@ -65,10 +65,10 @@ os.environ.setdefault("MQTT_HOST", "localhost")
 os.environ.setdefault("MQTT_PORT", "1883")
 os.environ.setdefault("MQTT_TOPIC", "test/topic")
 
-import pytest
-from unittest.mock import AsyncMock, MagicMock
-from fastapi import FastAPI
-from fastapi.testclient import TestClient
+import pytest  # noqa: E402
+from unittest.mock import AsyncMock, MagicMock  # noqa: E402
+from fastapi import FastAPI  # noqa: E402
+from fastapi.testclient import TestClient  # noqa: E402
 
 _REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if _REPO_ROOT not in sys.path:
