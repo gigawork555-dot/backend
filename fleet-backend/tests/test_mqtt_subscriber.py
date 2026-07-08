@@ -53,6 +53,7 @@ from app.services.mqtt_subscriber import (  # noqa: E402
     on_message,
     is_mqtt_connected,
     _FALLBACK_EVENT_CONFIG,
+    _normalize_ts_epoch,  # [FIX #5]
 )
 
 
@@ -191,6 +192,70 @@ async def test_get_event_detection_config_handles_null_columns_in_row():
     assert config["threshold_harsh_corner"] == 0.40
     assert config["threshold_speed_kmh"] == 20.0
     assert config["threshold_idle_min"] == 5.0
+
+
+# =================================================================
+# _normalize_ts_epoch() — [FIX #5] shared ts-normalization helper
+# =================================================================
+
+def test_normalize_ts_epoch_none_falls_back_to_now(monkeypatch):
+    fixed_now = datetime(2026, 7, 1, 12, 0, 0, tzinfo=timezone.utc)
+
+    class _FixedDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return fixed_now
+
+    monkeypatch.setattr(mqtt_subscriber, "datetime", _FixedDateTime)
+
+    assert _normalize_ts_epoch(None) == pytest.approx(fixed_now.timestamp())
+
+
+def test_normalize_ts_epoch_seconds_passthrough():
+    assert _normalize_ts_epoch(1750000000) == pytest.approx(1750000000.0)
+
+
+def test_normalize_ts_epoch_string_seconds_parsed():
+    assert _normalize_ts_epoch("1750000000") == pytest.approx(1750000000.0)
+
+
+def test_normalize_ts_epoch_invalid_string_falls_back_to_now(monkeypatch):
+    fixed_now = datetime(2026, 7, 1, 12, 0, 0, tzinfo=timezone.utc)
+
+    class _FixedDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return fixed_now
+
+    monkeypatch.setattr(mqtt_subscriber, "datetime", _FixedDateTime)
+
+    assert _normalize_ts_epoch("not-a-number") == pytest.approx(fixed_now.timestamp())
+
+
+def test_normalize_ts_epoch_milliseconds_converted_to_seconds():
+    ts_ms = 1750000000000
+    assert _normalize_ts_epoch(ts_ms) == pytest.approx(ts_ms / 1000.0)
+
+
+def test_normalize_ts_epoch_pre_2020_falls_back_to_now(monkeypatch):
+    fixed_now = datetime(2026, 7, 1, 12, 0, 0, tzinfo=timezone.utc)
+
+    class _FixedDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return fixed_now
+
+    monkeypatch.setattr(mqtt_subscriber, "datetime", _FixedDateTime)
+
+    # board just booted: millis()/1000 style tiny value
+    assert _normalize_ts_epoch(11) == pytest.approx(fixed_now.timestamp())
+
+
+def test_normalize_ts_epoch_is_idempotent():
+    # calling it twice on an already-normalized value must not change it
+    once = _normalize_ts_epoch(1750000000000)  # ms input
+    twice = _normalize_ts_epoch(once)
+    assert once == pytest.approx(twice)
 
 
 # =================================================================
@@ -465,6 +530,92 @@ async def test_handle_telemetry_merges_enriched_event_into_stored_payload(monkey
     _, call_args, _ = store_mock.mock_calls[0]
     stored_payload = call_args[3]  # store_telemetry(pool, device_id, vehicle_id, payload)
     assert stored_payload["event"] == "harsh_brake"
+
+
+async def test_handle_telemetry_propagates_fixed_ts_to_trip_manager(monkeypatch):
+    """
+    [FIX #5 — regression guard] ยืนยันว่า ts ที่ trip_manager ได้รับ
+    ต้องเป็น ts ที่ normalize แล้ว (fixed_ts) ไม่ใช่ ts ดิบที่บอร์ดส่งมา
+    (เช่น millis()/1000 = 11 วินาที ที่เคยกลายเป็นปี 1970 ก่อนแก้)
+    """
+    pool = MagicMock()
+    pool.fetchval = AsyncMock(return_value=101)
+    pool.fetchrow = AsyncMock(return_value=None)
+    pool.execute = AsyncMock()
+
+    trip_mock = AsyncMock()
+    monkeypatch.setattr(mqtt_subscriber, "trip_handle_telemetry", trip_mock)
+
+    store_mock = AsyncMock(return_value=1)
+    monkeypatch.setattr(mqtt_subscriber, "store_telemetry", store_mock)
+
+    # จำลอง ts ดิบแบบ millis()/1000 ของบอร์ดที่เพิ่งบูต (ก่อนปี 2020)
+    raw_boot_ts = 11
+    payload = {"ts": raw_boot_ts, "ignition": True}
+
+    await handle_telemetry(pool, "KTC-002", payload)
+
+    _, kwargs = trip_mock.await_args
+    propagated_ts = kwargs["payload"]["ts"]
+
+    # ต้องไม่ใช่ 11 อีกต่อไป (ต้องถูกแทนด้วยเวลา server ปัจจุบัน)
+    assert propagated_ts != raw_boot_ts
+    assert propagated_ts > 1577836800  # หลังปี 2020
+
+
+async def test_handle_telemetry_propagates_normal_ts_unchanged_to_trip_manager(monkeypatch):
+    """
+    [FIX #5] เมื่อ ts เป็น epoch ปกติ (post-2020, seconds) อยู่แล้ว
+    ค่าที่ trip_manager ได้รับต้องเท่ากับ ts เดิม (ไม่ถูกบิดเบือน)
+    """
+    pool = MagicMock()
+    pool.fetchval = AsyncMock(return_value=101)
+    pool.fetchrow = AsyncMock(return_value=None)
+    pool.execute = AsyncMock()
+
+    trip_mock = AsyncMock()
+    monkeypatch.setattr(mqtt_subscriber, "trip_handle_telemetry", trip_mock)
+
+    store_mock = AsyncMock(return_value=1)
+    monkeypatch.setattr(mqtt_subscriber, "store_telemetry", store_mock)
+
+    normal_ts = 1750000000
+    payload = {"ts": normal_ts, "ignition": True}
+
+    await handle_telemetry(pool, "KTC-003", payload)
+
+    _, kwargs = trip_mock.await_args
+    assert kwargs["payload"]["ts"] == pytest.approx(float(normal_ts))
+
+    # store_telemetry ก็ต้องได้รับ ts ที่ normalize แล้วตัวเดียวกัน
+    _, call_args, _ = store_mock.mock_calls[0]
+    stored_payload = call_args[3]
+    assert stored_payload["ts"] == pytest.approx(float(normal_ts))
+
+
+async def test_handle_telemetry_propagates_millisecond_ts_converted_to_trip_manager(monkeypatch):
+    """
+    [FIX #5] ts ที่เป็น milliseconds (> 1e11) ต้องถูกแปลงเป็น seconds
+    ก่อนส่งต่อไป trip_manager ด้วยเช่นกัน ไม่ใช่แค่ตอน store_telemetry()
+    """
+    pool = MagicMock()
+    pool.fetchval = AsyncMock(return_value=101)
+    pool.fetchrow = AsyncMock(return_value=None)
+    pool.execute = AsyncMock()
+
+    trip_mock = AsyncMock()
+    monkeypatch.setattr(mqtt_subscriber, "trip_handle_telemetry", trip_mock)
+
+    store_mock = AsyncMock(return_value=1)
+    monkeypatch.setattr(mqtt_subscriber, "store_telemetry", store_mock)
+
+    ts_ms = 1750000000000  # milliseconds
+    payload = {"ts": ts_ms, "ignition": True}
+
+    await handle_telemetry(pool, "KTC-004", payload)
+
+    _, kwargs = trip_mock.await_args
+    assert kwargs["payload"]["ts"] == pytest.approx(ts_ms / 1000.0)
 
 
 async def test_handle_telemetry_swallows_unexpected_exception(monkeypatch):

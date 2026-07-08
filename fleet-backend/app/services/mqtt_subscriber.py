@@ -25,7 +25,7 @@ FIXES (vs previous version):
   [BUG-3] hmac.new() ไม่มีใน Python stdlib
           → แก้เป็น hmac.new() (ถูกต้อง)
 
-  [FIX #1 — this revision] Event detection ordering
+  [FIX #1] Event detection ordering
           เดิม: store_telemetry() insert ค่า event ที่ ESP32 ส่งมาเอง
                 (client-decided) แล้ว ep_process_event() คำนวณ event
                 จาก server-side config อีกที แต่ผลลัพธ์ "enriched" นั้น
@@ -40,7 +40,7 @@ FIXES (vs previous version):
                  เรียก store_telemetry() ครั้งเดียว ด้วย payload ที่
                  ถูก enrich แล้ว
 
-  [FIX #2 — this revision] Config key mismatch
+  [FIX #2] Config key mismatch
           เดิม: _DEFAULT_EVENT_CONFIG เป็น dict คงที่ในไฟล์นี้ ใช้ชื่อ
                 key (threshold_brake_g, threshold_accel_g,
                 threshold_corner_g) ที่ "ไม่ตรง" กับชื่อ key ที่
@@ -58,6 +58,30 @@ FIXES (vs previous version):
                  กับที่ trip_manager.get_active_scoring_config() ใช้
                  สำหรับ score_calculator ด้วย เพื่อไม่ให้ config สอง
                  จุดในระบบ drift ออกจากกันอีก)
+
+  [FIX #5 — this revision] ts ไม่ propagate ไป trip_manager
+          เดิม: store_telemetry() normalize payload["ts"] (รองรับ
+                None/string/int/float, ms→s, sanity pre-2020 fallback)
+                แต่ผลลัพธ์เก็บไว้แค่ใน local variable `ts_epoch`
+                ภายในฟังก์ชันเท่านั้น ไม่เคยเขียนกลับเข้า payload
+                → เวลาที่ trip_manager.handle_telemetry() อ่าน
+                  payload["ts"] เพื่อคำนวณ trip_start/trip_end มันยัง
+                  เห็น ts ดิบที่บอร์ดส่งมา (ก่อนแปลง) เสมอ
+                → กรณีบอร์ดส่ง ts แบบ millis()/1000 (เช่นตอนเพิ่งบูต
+                  ยังไม่ sync เวลาเป็น epoch จริง) ค่านั้น "ดูเหมือน
+                  ปี 1970" ไปตกอยู่ที่ trip_manager ตรงๆ ทำให้
+                  trip_logs.trip_start กลายเป็นปี 1970 แทนที่จะเป็น
+                  เวลา server ปัจจุบันตามที่ store_telemetry() ตั้งใจ
+                  จะ fallback ให้
+
+          แก้ไข: แยก logic normalize ts ออกมาเป็นฟังก์ชันกลาง
+                 `_normalize_ts_epoch()` (pure function, idempotent)
+                 ใช้ร่วมกันทั้งใน handle_telemetry() และ
+                 store_telemetry() — handle_telemetry() คำนวณ
+                 `fixed_ts` ครั้งเดียวแล้วเขียนกลับเข้า
+                 `payload_to_store["ts"]` ก่อนส่งต่อทั้งไปยัง
+                 store_telemetry() และ trip_manager.handle_telemetry()
+                 ทำให้ทั้งสองฝั่งเห็นเวลาที่ normalize แล้วตรงกันเสมอ
 """
 
 import asyncio
@@ -208,6 +232,53 @@ async def get_event_detection_config(pool: asyncpg.Pool) -> dict:
 
 
 # ──────────────────────────────────────────────────────────────
+# [FIX #5] ts normalization — แยกออกมาเป็นฟังก์ชันกลาง (pure function)
+#
+# เดิม logic นี้อยู่ในตัว store_telemetry() ล้วนๆ และเก็บผลลัพธ์ไว้แค่
+# ใน local variable ทำให้ trip_manager ที่อ่าน payload["ts"] โดยตรง
+# (ไม่ผ่าน store_telemetry) ไม่เคยได้ค่าที่ normalize แล้วเลย
+# ──────────────────────────────────────────────────────────────
+
+def _normalize_ts_epoch(raw_ts) -> float:
+    """
+    Normalize ts ให้เป็น epoch seconds (float) เสมอ
+
+    - รองรับ None / string / int / float
+    - แปลง milliseconds → seconds ถ้าค่าใหญ่เกิน 1e11
+    - ถ้าค่าดูเหมือนก่อนปี 2020 (บอร์ดยังไม่ sync เวลา) → ใช้เวลา server แทน
+
+    Pure function — เรียกซ้ำได้อย่างปลอดภัย (idempotent) เพราะค่าที่
+    normalize แล้วจะอยู่ในช่วง [1577836800, 1e11] เสมอ ไม่มีทาง
+    ถูกตีความว่าเป็น milliseconds หรือ pre-2020 อีกในการเรียกครั้งถัดไป
+    """
+    if raw_ts is None:
+        return datetime.now(timezone.utc).timestamp()
+
+    if isinstance(raw_ts, str):
+        try:
+            ts_epoch = float(raw_ts)
+        except ValueError:
+            return datetime.now(timezone.utc).timestamp()
+    else:
+        ts_epoch = float(raw_ts)
+
+    # ถ้า ts ใหญ่เกิน 1e11 แสดงว่าเป็น milliseconds → หาร 1000
+    if ts_epoch > 1e11:
+        ts_epoch = ts_epoch / 1000.0
+        logger.debug(f"[MQTT] ts converted from ms to seconds: {ts_epoch}")
+
+    # ตรวจ sanity: ถ้า ts ยังเป็น before 2020 → ใช้เวลาปัจจุบันแทน
+    if ts_epoch < 1577836800:  # 2020-01-01 00:00:00 UTC
+        logger.warning(
+            f"[MQTT] ts={ts_epoch} ดูเหมือน GPS ยังไม่ sync เวลา "
+            f"→ ใช้ server time แทน"
+        )
+        ts_epoch = datetime.now(timezone.utc).timestamp()
+
+    return ts_epoch
+
+
+# ──────────────────────────────────────────────────────────────
 # Store Telemetry into telemetry_raw
 # ──────────────────────────────────────────────────────────────
 
@@ -225,34 +296,18 @@ async def store_telemetry(
     ep_process_event() มาแล้ว (enriched) — ค่า event/event_severity
     ที่ถูก insert คือค่าที่ server ตรวจสอบเอง ไม่ใช่ค่าดิบจาก ESP32
 
+    [FIX #5] ts normalization ตอนนี้อยู่ใน _normalize_ts_epoch()
+    (ฟังก์ชันกลาง ใช้ร่วมกับ handle_telemetry()) — ที่นี่ยังคงเรียกใช้
+    ได้อย่างปลอดภัยแม้ payload["ts"] จะถูก normalize มาก่อนแล้วจาก
+    handle_telemetry() ก็ตาม (idempotent) เผื่อกรณีมีที่อื่นเรียก
+    store_telemetry() ตรงๆ โดยไม่ผ่าน handle_telemetry()
+
     หมายเหตุ schema: telemetry_raw ไม่มีคอลัมน์ vehicle_id และ created_at
     vehicle_id ถูก lookup แยก แต่ไม่ได้ store ใน raw table
     (join ผ่าน devices.vehicle_id ตอน query แทน)
     """
-    # ── Normalize timestamp ──────────────────────────────────────
-    raw_ts = payload.get("ts")
-    if raw_ts is None:
-        ts_epoch = datetime.now(timezone.utc).timestamp()
-    elif isinstance(raw_ts, str):
-        try:
-            ts_epoch = float(raw_ts)
-        except ValueError:
-            ts_epoch = datetime.now(timezone.utc).timestamp()
-    else:
-        ts_epoch = float(raw_ts)
-
-    # ถ้า ts ใหญ่เกิน 1e11 แสดงว่าเป็น milliseconds → หาร 1000
-    if ts_epoch > 1e11:
-        ts_epoch = ts_epoch / 1000.0
-        logger.debug(f"[MQTT] ts converted from ms to seconds: {ts_epoch}")
-
-    # ตรวจ sanity: ถ้า ts ยังเป็น before 2020 → ใช้เวลาปัจจุบันแทน
-    if ts_epoch < 1577836800:  # 2020-01-01 00:00:00 UTC
-        logger.warning(
-            f"[MQTT] ts={ts_epoch} ดูเหมือน GPS ยังไม่ sync เวลา "
-            f"→ ใช้ server time แทน"
-        )
-        ts_epoch = datetime.now(timezone.utc).timestamp()
+    # ── Normalize timestamp (ใช้ฟังก์ชันกลาง — FIX #5) ───────────
+    ts_epoch = _normalize_ts_epoch(payload.get("ts"))
 
     # ── Normalize ignition ──────────────────────────────────────
     raw_ignition = payload.get("ignition")
@@ -346,11 +401,14 @@ async def handle_telemetry(
     3. Run event_processor.process_event() → server-side harsh event
        detection (FDD §10.4/§12.3, config-driven, Admin can retune
        thresholds without redeploying firmware)
-    4. Merge the enriched event/event_severity into the payload
-    5. Store the ENRICHED telemetry in telemetry_raw (single write)
-    6. Pass to trip_manager.handle_telemetry (trip boundary detection),
-       which now reads the server-verified event from telemetry_raw
-       when it later queries the trip window
+    4. [FIX #5] Normalize ts ONCE here via _normalize_ts_epoch()
+    5. Merge the enriched event/event_severity + fixed ts into the payload
+    6. Store the ENRICHED telemetry in telemetry_raw (single write)
+    7. Pass to trip_manager.handle_telemetry (trip boundary detection),
+       which now receives the SAME normalized ts that was stored —
+       not the raw board ts — fixing trip_logs.trip_start landing on
+       1970 when a board sends millis()/1000-style timestamps before
+       its clock is synced.
     """
     try:
         # ── Step 1: Lookup vehicle ──────────────────────────────
@@ -385,14 +443,21 @@ async def handle_telemetry(
             config=event_config,
         )
 
-        # ── Step 4: Merge enriched event เข้า payload ────────────
+        # ── Step 4: Normalize ts ครั้งเดียวตรงนี้ (FIX #5) ───────
+        # เดิมค่านี้ถูก normalize แค่ภายใน store_telemetry() เป็น
+        # local variable — ไม่เคยเขียนกลับเข้า payload เลย ทำให้
+        # trip_manager ที่อ่าน payload["ts"] เห็นค่าดิบจากบอร์ดเสมอ
+        fixed_ts = _normalize_ts_epoch(payload.get("ts"))
+
+        # ── Step 5: Merge enriched event + fixed ts เข้า payload ─
         payload_to_store = {
             **payload,
+            "ts": fixed_ts,  # [FIX #5] เขียน ts ที่ normalize แล้วกลับเข้า payload
             "event": enriched.get("event") or "",
             "event_severity": enriched.get("event_severity", 0.0),
         }
 
-        # ── Step 5: Store ENRICHED telemetry (single write) ─────
+        # ── Step 6: Store ENRICHED telemetry (single write) ─────
         telemetry_id = await store_telemetry(
             pool, device_id, vehicle_id, payload_to_store
         )
@@ -413,7 +478,10 @@ async def handle_telemetry(
                 f"severity={enriched.get('event_severity', 0.0):.2f}"
             )
 
-        # ── Step 6: Trip detection (requires vehicle binding) ───
+        # ── Step 7: Trip detection (requires vehicle binding) ───
+        # [FIX #5] payload_to_store["ts"] ตอนนี้เป็น fixed_ts (epoch
+        # จริงที่ normalize แล้ว) — trip_manager.handle_telemetry()
+        # จะ datetime.fromtimestamp() ได้ค่าที่ถูกต้อง ไม่ใช่ปี 1970
         if vehicle_id is not None:
             payload_with_device = {**payload_to_store, "device_id": device_id}
             await trip_handle_telemetry(pool=pool, payload=payload_with_device)
