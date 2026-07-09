@@ -138,6 +138,47 @@ CREATE TABLE IF NOT EXISTS telemetry_raw (
 -- แปลงเป็น TimescaleDB hypertable (partition by ts)
 SELECT create_hypertable('telemetry_raw', 'ts', if_not_exists => TRUE);
 
+-- =============================================================
+-- DATA RETENTION — FDD v1.4 §13 Non-Functional Requirements
+-- "เก็บ raw telemetry 90 วัน, trip summary 3 ปี, incentive records
+--  ตลอดชีวิต"
+--
+-- telemetry_raw เป็น TimescaleDB hypertable จึงใช้ native retention
+-- policy ได้โดยตรง — TimescaleDB จะ drop chunk ที่เก่ากว่า 90 วัน
+-- โดยอัตโนมัติผ่าน background job (ไม่ต้องเขียน cron/DELETE เอง)
+--
+-- if_not_exists => TRUE ทำให้คำสั่งนี้ idempotent: รันซ้ำได้โดยไม่ error
+-- แม้ policy จะถูกสร้างไปแล้วจากการรัน init.sql ครั้งก่อน (เช่นตอน
+-- container restart กับ volume เดิม)
+--
+-- สำคัญ: policy นี้ "ไม่ลบข้อมูลที่มีอยู่ทันที" — TimescaleDB จะ drop
+-- เฉพาะ chunk ที่ครบกำหนดตามรอบ background job ของมันเอง แถวที่ยัง
+-- ไม่เก่าเกิน 90 วัน ณ ตอนนี้จะไม่ถูกแตะต้องจนกว่าจะถึงเวลาจริงในอนาคต
+--
+-- ตรวจสอบ/จัดการ policy นี้ภายหลังได้ด้วย:
+--   SELECT * FROM timescaledb_information.jobs
+--     WHERE proc_name = 'policy_retention';
+--   SELECT remove_retention_policy('telemetry_raw');  -- ถ้าต้องการปิด
+-- =============================================================
+
+SELECT add_retention_policy(
+    'telemetry_raw',
+    INTERVAL '90 days',
+    if_not_exists => TRUE
+);
+
+-- หมายเหตุ: trip_logs เป็นตารางปกติ (ไม่ใช่ hypertable) จึงใช้
+-- add_retention_policy() ของ TimescaleDB ไม่ได้ — การลบ trip_logs
+-- ที่เก่ากว่า 3 ปีตาม FDD §13 ถูกจัดการแยกในฝั่ง application layer
+-- (ดู trip_logs_retention_task() ใน app/main.py) ซึ่งรันเป็น background
+-- asyncio task ทุก 24 ชั่วโมงแทน
+
+-- หมายเหตุ: "incentive records เก็บตลอดชีวิต" ตาม FDD §13 หมายถึง
+-- fleet.telematics.incentive model ซึ่งอยู่ฝั่ง Odoo (§12.4) ไม่ใช่
+-- ตารางใน Backend database นี้ — จึงไม่มี retention policy ใดๆ
+-- สำหรับ incentive records ในไฟล์นี้โดยเจตนา (ไม่มีอะไรให้ตั้งค่า
+-- ที่นี่ — ข้อมูลนี้ไม่เคยอยู่ใน TimescaleDB schema ของ Backend เลย)
+
 CREATE INDEX IF NOT EXISTS idx_telemetry_device_ts
     ON telemetry_raw (device_id, ts DESC);
 

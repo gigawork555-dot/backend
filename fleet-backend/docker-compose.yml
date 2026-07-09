@@ -219,6 +219,85 @@ services:
       - fleet-network
 
 
+  # ──────────────────────────────────────────────────────────────
+  # FDD §11.1 — "Reverse Proxy | Nginx | 80/443 | SSL termination,
+  # load balance" และ §13 — "REST API ผ่าน HTTPS"
+  # ──────────────────────────────────────────────────────────────
+  # หมายเหตุสำคัญ (infra, ไม่ใช่ scope ของโค้ด backend):
+  #   - nginx.conf อ้างอิง ssl_certificate / ssl_certificate_key ที่
+  #     PATH PLACEHOLDER (./nginx/certs/) — ไฟล์ cert จริงยังไม่ถูกสร้าง
+  #     ไว้ในโปรเจกต์นี้ ต้อง generate/จัดหาแยกต่างหาก:
+  #       • Dev/local     → self-signed cert (openssl req -x509 ...)
+  #       • Staging/Prod  → Let's Encrypt (certbot) หรือ cert จริงจาก CA
+  #   - ถ้ายังไม่มีไฟล์ cert อยู่ใน ./nginx/certs/ container nginx นี้
+  #     จะ exit ทันทีตอน start (nginx ไม่สามารถ bind SSL context ได้
+  #     โดยไม่มีไฟล์ cert) — นี่คือพฤติกรรมที่ "ตั้งใจ" ปล่อยไว้ก่อน
+  #     จนกว่าทีม infra จะใส่ cert จริงเข้ามา
+  #   - service นี้ "ไม่มี" service อื่นใดมา depends_on กลับ
+  #     (ไม่มี service ไหน depends_on: nginx) ดังนั้นถ้า nginx fail
+  #     to start, backend / timescaledb / emqx จะยัง healthy และ
+  #     ทำงานได้ตามปกติ — dev/debug ยังเข้า backend ตรงผ่าน 8001:8000
+  #     (port mapping เดิม ไม่ได้ถูกลบหรือแก้ไข) ได้เหมือนเดิมทุกประการ
+  #   - healthcheck ของ nginx ตั้งใจ "ไม่ผูก" service อื่นไว้ด้วย
+  #     (ไม่มีใคร depends_on: nginx.condition: service_healthy)
+  #     เพื่อไม่ให้ `docker-compose up` ทั้งชุด block/fail ถ้า nginx
+  #     ยังไม่พร้อมเรื่อง cert
+  nginx:
+
+    container_name: fleet-nginx
+
+    image:
+      nginx:latest
+
+    restart: unless-stopped
+
+    ports:
+
+      - "80:80"
+
+      - "443:443"
+
+    volumes:
+
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+
+      # PLACEHOLDER — mount โฟลเดอร์ cert จริงเข้ามาที่นี่
+      # (self-signed สำหรับ dev, Let's Encrypt/CA cert สำหรับ prod)
+      # ไฟล์ที่ต้องมีอยู่จริงก่อน container นี้จะ start สำเร็จ:
+      #   ./nginx/certs/fullchain.pem
+      #   ./nginx/certs/privkey.pem
+      - ./nginx/certs:/etc/nginx/certs:ro
+
+    depends_on:
+
+      backend:
+        condition: service_healthy
+
+    networks:
+
+      - fleet-network
+
+    # healthcheck เป็น optional/soft-check เท่านั้น — ไม่มี service
+    # อื่นใดใน compose file นี้ depends_on nginx จึงไม่ทำให้ stack
+    # โดยรวมล้มเหลวถ้า nginx ยัง unhealthy (เช่น ยังไม่มี cert จริง)
+    healthcheck:
+
+      test:
+        [
+          "CMD",
+          "curl",
+          "-f",
+          "http://localhost:80/"
+        ]
+
+      interval: 30s
+
+      timeout: 10s
+
+      retries: 5
+
+      start_period: 20s
+
 
 
 

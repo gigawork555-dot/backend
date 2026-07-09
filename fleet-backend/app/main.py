@@ -16,6 +16,7 @@ from app.config import settings
 from app.database import (
     create_db_pool,
     close_db_pool,
+    get_db_pool,
 )
 
 from app.services.mqtt_subscriber import (
@@ -51,16 +52,94 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ──────────────────────────────────────────────
+# Data Retention — FDD v1.4 §13
+# "trip summary 3 ปี" — trip_logs ไม่ใช่ TimescaleDB hypertable
+# (ต่างจาก telemetry_raw ที่ใช้ add_retention_policy() ใน init.sql
+# ได้โดยตรง) จึงต้องลบเองผ่าน DELETE ที่รันเป็น background task
+# ──────────────────────────────────────────────
+
+TRIP_LOGS_RETENTION_INTERVAL_SECONDS: int = 24 * 60 * 60  # ทุก 24 ชั่วโมง
+TRIP_LOGS_RETENTION_PERIOD: str = "3 years"               # FDD §13
+
+
+async def trip_logs_retention_task() -> None:
+    """
+    Background task: ลบ trip_logs ที่ created_at เก่ากว่า 3 ปี
+    ตาม FDD v1.4 §13 Data Retention ("trip summary 3 ปี")
+
+    ออกแบบให้:
+    - รันเป็น asyncio loop แยกจาก event loop หลัก ไม่บล็อกการรับ
+      request หรือ MQTT worker (เหมือน mqtt_subscriber_task())
+    - ครอบ try/except ทุกรอบ — ถ้า DELETE ล้มเหลว (เช่น DB
+      ขาดการเชื่อมต่อชั่วคราว) จะ log แล้วรอรอบถัดไป ไม่ทำให้ task
+      ตายเงียบ และไม่ทำให้ FastAPI app ทั้งตัว crash
+    - ไม่ลบข้อมูลใดๆ ทันทีตอน deploy — เงื่อนไข WHERE created_at <
+      NOW() - INTERVAL '3 years' หมายความว่ารอบแรกที่รันจะลบเฉพาะ
+      แถวที่เก่าเกิน 3 ปีจริงๆ ณ ขณะนั้นเท่านั้น (ถ้ายังไม่มีข้อมูล
+      เก่าขนาดนั้น จะไม่มีอะไรถูกลบเลย)
+    """
+
+    logger.info(
+        "[Retention] trip_logs retention task started "
+        f"(interval={TRIP_LOGS_RETENTION_INTERVAL_SECONDS}s, "
+        f"keep={TRIP_LOGS_RETENTION_PERIOD})"
+    )
+
+    while True:
+
+        try:
+            pool = await get_db_pool()
+
+            # หมายเหตุ: ห้ามใช้ "$1::interval" ตรงๆ กับการ bind python str —
+            # asyncpg จะพยายาม encode ค่าเป็น interval type ที่ฝั่ง client
+            # เอง (คาดหวัง timedelta object) แล้ว error ก่อนถึง Postgres
+            # ("'str' object has no attribute 'days'") แก้โดย concat
+            # string ว่างก่อน แล้วค่อย cast — บังคับให้ asyncpg ส่งเป็น
+            # text ธรรมดา ให้ Postgres เป็นผู้ parse interval เอง
+            # (ใช้ pattern เดียวกับ routes_reports.py: "($1 || ' days')::interval")
+            result = await pool.execute(
+                "DELETE FROM trip_logs WHERE created_at < NOW() - ($1 || '')::interval",
+                TRIP_LOGS_RETENTION_PERIOD,
+            )
+
+            logger.info(
+                f"[Retention] trip_logs cleanup completed: {result}"
+            )
+
+        except asyncio.CancelledError:
+            logger.info(
+                "[Retention] trip_logs retention task cancelled — shutting down"
+            )
+            raise
+
+        except Exception:
+            # ไม่ raise ต่อ — log แล้วปล่อยให้ loop วนไปรอรอบถัดไป
+            logger.exception(
+                "[Retention] trip_logs cleanup failed — will retry next cycle"
+            )
+
+        try:
+            await asyncio.sleep(TRIP_LOGS_RETENTION_INTERVAL_SECONDS)
+
+        except asyncio.CancelledError:
+            logger.info(
+                "[Retention] trip_logs retention task cancelled during sleep"
+            )
+            raise
+
+
+# ──────────────────────────────────────────────
 # Lifespan
 # ──────────────────────────────────────────────
 
 mqtt_task: asyncio.Task | None = None
+trip_retention_task: asyncio.Task | None = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
 
-    global mqtt_task
+    global mqtt_task, trip_retention_task
 
     logger.info("Application startup")
 
@@ -81,6 +160,16 @@ async def lifespan(app: FastAPI):
         )
 
         logger.info("MQTT worker started")
+
+        #
+        # 3. Start Trip Logs Retention Worker (FDD §13)
+        #
+        trip_retention_task = asyncio.create_task(
+            trip_logs_retention_task(),
+            name="trip-logs-retention"
+        )
+
+        logger.info("Trip logs retention worker started")
 
         yield
 
@@ -109,7 +198,23 @@ async def lifespan(app: FastAPI):
                 logger.exception("MQTT worker shutdown error")
 
         #
-        # 2. Close Database Pool
+        # 2. Stop Trip Logs Retention Worker
+        #
+        if trip_retention_task is not None:
+
+            trip_retention_task.cancel()
+
+            try:
+                await trip_retention_task
+
+            except asyncio.CancelledError:
+                logger.info("Trip logs retention worker stopped")
+
+            except Exception:
+                logger.exception("Trip logs retention worker shutdown error")
+
+        #
+        # 3. Close Database Pool
         #
         await close_db_pool()
 
