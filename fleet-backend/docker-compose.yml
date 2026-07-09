@@ -26,6 +26,12 @@ services:
       MQTT_HOST: emqx
       MQTT_PORT: 1883
 
+      # FDD §11.1 — Redis Cache layer
+      # ชื่อ service "redis" ใน internal Docker network (คนละพอร์ตกับ
+      # ที่ expose ออกสู่ host — ดู service redis ด้านล่าง)
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+
 
     ports:
 
@@ -39,6 +45,10 @@ services:
 
 
       emqx:
+        condition: service_healthy
+
+
+      redis:
         condition: service_healthy
 
 
@@ -220,6 +230,56 @@ services:
 
 
   # ──────────────────────────────────────────────────────────────
+  # FDD §11.1 — "Cache | Redis 7 | 6379 | Session, rate limit,
+  # real-time dashboard"
+  # ──────────────────────────────────────────────────────────────
+  # หมายเหตุ port mapping: ใช้ 6380:6379 (เหมือน timescaledb ที่ใช้
+  # 5435:5432) เพื่อกัน conflict กับ Redis local ที่อาจรันอยู่แล้ว
+  # บนเครื่อง dev ที่ port 6379 ปกติ — service อื่นใน docker network
+  # นี้ (backend) ยังคุยกันผ่าน internal port 6379 ตามปกติ (ดู
+  # REDIS_HOST/REDIS_PORT ใน service backend ด้านบน) ไม่กระทบจาก
+  # port mapping ภายนอกนี้เลย
+  redis:
+
+    container_name: fleet-redis
+
+    image:
+      redis:7-alpine
+
+    restart: unless-stopped
+
+    ports:
+
+      - "6380:6379"
+
+    volumes:
+
+      # persist ข้อมูล session ไม่ให้หายตอน container restart
+      - redis_data:/data
+
+    healthcheck:
+
+      test:
+        [
+          "CMD",
+          "redis-cli",
+          "ping"
+        ]
+
+      interval: 10s
+
+      timeout: 5s
+
+      retries: 10
+
+      start_period: 10s
+
+    networks:
+
+      - fleet-network
+
+
+  # ──────────────────────────────────────────────────────────────
   # FDD §11.1 — "Reverse Proxy | Nginx | 80/443 | SSL termination,
   # load balance" และ §13 — "REST API ผ่าน HTTPS"
   # ──────────────────────────────────────────────────────────────
@@ -323,3 +383,6 @@ volumes:
 
 
   emqx_log:
+
+
+  redis_data:

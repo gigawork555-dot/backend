@@ -4,11 +4,12 @@ import jwt
 import bcrypt
 from datetime import datetime, timedelta, timezone
 from typing import Optional
-from fastapi import Depends, HTTPException, Security, status
+from fastapi import Depends, HTTPException, Request, Security, status
 from fastapi.security import APIKeyHeader, OAuth2PasswordBearer
 
 from app.config import settings
 from app.auth.models import get_api_key, get_user_by_id, update_key_last_used
+from app.cache import rate_limit_check
 
 # ── Secret Key สำหรับ JWT ─────────────────────────────────────
 JWT_SECRET      = "fleet_jwt_secret_change_this_in_production"
@@ -18,6 +19,14 @@ JWT_EXPIRE_MIN  = 60 * 8  # 8 ชั่วโมง
 # ── Security Scheme ───────────────────────────────────────────
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 oauth2_scheme  = OAuth2PasswordBearer(tokenUrl="/auth/login", auto_error=False)
+
+# ── Rate Limit defaults (FDD §11.1 — Redis: rate limit) ───────
+# ค่า default นี้ยังไม่ได้ถูกบังคับใช้กับ endpoint ใดโดยอัตโนมัติใน
+# รอบนี้ (ตามสเป็ค prompt #8 ข้อ 7) — เตรียม dependency ไว้ก่อน
+# endpoint ที่ต้องการ rate limit ค่อยเพิ่ม Depends(rate_limit_guard)
+# เองทีหลัง หรือปรับ limit/window ผ่าน parameter ของ rate_limit_guard()
+RATE_LIMIT_DEFAULT_LIMIT: int = 60          # จำนวน request สูงสุด
+RATE_LIMIT_DEFAULT_WINDOW_SECONDS: int = 60  # ต่อหน้าต่างเวลา (วินาที)
 
 
 # ────────────────────────────────────────────────────────────────
@@ -118,3 +127,87 @@ async def verify_odoo_api_key(api_key: str = Security(api_key_header)):
             raise HTTPException(status_code=403, detail="API Key นี้ไม่มีสิทธิ์เรียก Odoo endpoint")
 
     return key_data
+
+
+# ────────────────────────────────────────────────────────────────
+# Rate Limit Guard (FDD §11.1 — Redis: rate limit)
+#
+# [NEW — prompt #8] เตรียม dependency ไว้ก่อน ยังไม่บังคับใช้กับ
+# endpoint ใดในรอบนี้ตามสเป็ค — endpoint ที่ต้องการ rate limit ค่อย
+# เพิ่ม `Depends(rate_limit_guard)` เอง (หรือใช้
+# `Depends(make_rate_limit_guard(limit=..., window_seconds=...))`
+# ถ้าต้องการค่า limit/window ที่ต่างจาก default)
+#
+# หลักการ: fail-OPEN เสมอ — ถ้า Redis ต่อไม่ได้ rate_limit_check()
+# (ใน app/cache.py) จะคืน True (อนุญาต) แล้ว log warning เท่านั้น
+# ไม่ raise ไม่ block request เพราะ Redis ล่มต้องไม่ทำให้ API ทั้ง
+# ระบบใช้งานไม่ได้
+# ────────────────────────────────────────────────────────────────
+
+def _rate_limit_identity(request: Request) -> str:
+    """
+    หา identity สำหรับใช้เป็น rate-limit key
+
+    ลำดับความสำคัญ:
+    1. X-API-Key header (ถ้ามี — แยก quota ตาม API key)
+    2. remote IP ของ client (fallback ทั่วไป)
+    """
+    api_key = request.headers.get("X-API-Key") or request.headers.get("APIKEY")
+    if api_key:
+        return f"apikey:{api_key}"
+
+    client_ip = request.client.host if request.client else "unknown"
+    return f"ip:{client_ip}"
+
+
+async def rate_limit_guard(
+    request: Request,
+    limit: int = RATE_LIMIT_DEFAULT_LIMIT,
+    window_seconds: int = RATE_LIMIT_DEFAULT_WINDOW_SECONDS,
+) -> None:
+    """
+    Dependency สำหรับจำกัดจำนวน request ต่อหน้าต่างเวลา
+
+    ใช้งาน:
+        @router.get("/some-endpoint")
+        async def handler(_: None = Depends(rate_limit_guard)):
+            ...
+
+    ถ้าเกิน limit → raise HTTPException(429)
+    ถ้า Redis ต่อไม่ได้ → log warning แล้วปล่อยผ่าน (fail-open)
+    ตาม rate_limit_check() ใน app/cache.py
+    """
+    identity = _rate_limit_identity(request)
+
+    allowed = await rate_limit_check(
+        key=f"{request.url.path}:{identity}",
+        limit=limit,
+        window_seconds=window_seconds,
+    )
+
+    if not allowed:
+        raise HTTPException(
+            status_code=429,
+            detail=(
+                f"Rate limit exceeded — สูงสุด {limit} requests "
+                f"ต่อ {window_seconds} วินาที กรุณาลองใหม่ภายหลัง"
+            ),
+        )
+
+
+def make_rate_limit_guard(
+    limit: int = RATE_LIMIT_DEFAULT_LIMIT,
+    window_seconds: int = RATE_LIMIT_DEFAULT_WINDOW_SECONDS,
+):
+    """
+    Factory สำหรับสร้าง rate_limit_guard ที่มี limit/window เฉพาะ
+    endpoint ที่ต้องการค่าต่างจาก default เช่น:
+
+        @router.post("/login", dependencies=[
+            Depends(make_rate_limit_guard(limit=5, window_seconds=60))
+        ])
+    """
+    async def _guard(request: Request) -> None:
+        await rate_limit_guard(request, limit=limit, window_seconds=window_seconds)
+
+    return _guard

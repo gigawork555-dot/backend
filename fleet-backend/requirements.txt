@@ -11,6 +11,11 @@ python-multipart==0.0.20
 bcrypt==4.1.2
 PyJWT==2.8.0
 
+# ---- Redis Cache Layer (FDD §11.1) ----
+# async client ผ่าน redis.asyncio — ใช้สำหรับ session, rate limit,
+# real-time dashboard cache (ดู app/cache.py)
+redis[hiredis]==5.0.8
+
 # ---- Testing Dependencies ----
 pytest>=9.1.0
 pytest-asyncio>=0.23.0

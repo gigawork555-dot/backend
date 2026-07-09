@@ -11,6 +11,10 @@ import json
 import logging
 from app.config import settings
 from app.database import get_db_pool
+from app.cache import (
+    cache_fleet_live_snapshot,
+    get_cached_fleet_live_snapshot,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -380,8 +384,70 @@ async def get_vehicle_trips(
 #      ใหม่ทุกรอบ — ลด overhead การเปิด/ปิด connection ทุก 5 วิ
 #   2. ครอบ loop ด้วย try/except asyncio.CancelledError เพื่อ cleanup
 #      ทันทีเมื่อ client ตัดการเชื่อมต่อ แทนที่จะปล่อยให้ loop วนต่อ
+#
+# [NEW — prompt #8, FDD §11.1 Cache layer]
+#   3. ก่อน query telemetry_raw ทุกรอบ เช็ค Redis cache
+#      (get_cached_fleet_live_snapshot()) ก่อนเสมอ — ถ้า hit ใช้
+#      ผลจาก cache ได้เลย ไม่ต้อง query DB ซ้ำ ถ้า miss ค่อย query
+#      DB แล้ว cache_fleet_live_snapshot() เก็บผลไว้ (TTL 3 วินาที)
+#      เพื่อดูดซับ concurrent SSE client หลายคนที่ยิง endpoint นี้
+#      พร้อมกัน ไม่ให้แต่ละคน query TimescaleDB ซ้ำทุก 5 วินาทีเอง
+#   4. ทุกจุดที่เรียก Redis ครอบ try/except แยกจาก DB query เสมอ —
+#      ถ้า Redis ล่ม ต้อง fallback ไป query DB ตรงได้เหมือนเดิม
+#      ทันที (cache เป็น optional layer ห้ามทำให้ SSE endpoint พัง)
 # ============================================================
 fleet_router = APIRouter(prefix="/api/v1/fleet", tags=["Fleet Live"])
+
+
+async def _fetch_fleet_live_rows(pool: asyncpg.Pool) -> list:
+    """
+    ดึงข้อมูลตำแหน่งรถทุกคันล่าสุดจาก DB ตรงๆ (ไม่ผ่าน cache)
+    แยกออกมาเป็นฟังก์ชันย่อยเพื่อให้เรียกซ้ำได้ทั้งจาก cache-miss
+    path และ Redis-down fallback path โดยไม่ duplicate SQL
+    """
+    rows = await pool.fetch("""
+        SELECT us.vehicle_id, us.device_id,
+               t.lat, t.lon, t.speed, t.ignition, t.ts
+        FROM update_status us
+        LEFT JOIN LATERAL (
+            SELECT lat, lon, speed, ignition, ts
+            FROM telemetry_raw WHERE device_id = us.device_id
+            ORDER BY ts DESC LIMIT 1
+        ) t ON true
+        ORDER BY us.vehicle_id
+    """)
+    return [dict(r) for r in rows]
+
+
+async def _get_fleet_live_data(pool: asyncpg.Pool) -> list:
+    """
+    ดึงข้อมูล fleet-live โดยเช็ค Redis cache ก่อนเสมอ (cache-aside
+    pattern) — miss หรือ Redis ล่ม → fallback query DB ตรง
+
+    การ cache/ดึง cache ทั้งสองทางครอบ try/except แยกจากส่วน query
+    DB โดยเจตนา: ถ้า Redis ปัญหา ต้องยังคง query + คืนข้อมูลจาก DB
+    ได้ตามปกติเสมอ (ไม่ raise ออกไปจาก endpoint)
+    """
+    cached = None
+    try:
+        cached = await get_cached_fleet_live_snapshot()
+    except Exception:
+        logger.warning("[fleet/live] Redis cache read failed — fallback to DB", exc_info=True)
+
+    if cached is not None:
+        return cached
+
+    data = await _fetch_fleet_live_rows(pool)
+
+    try:
+        await cache_fleet_live_snapshot(data)
+    except Exception:
+        logger.warning(
+            "[fleet/live] Redis cache write failed — continuing without cache",
+            exc_info=True,
+        )
+
+    return data
 
 
 @fleet_router.get("/live", summary="SSE real-time ตำแหน่งรถทุกคัน ส่งทุก 5 วินาที")
@@ -417,18 +483,11 @@ async def fleet_live(
         try:
             while True:
                 try:
-                    rows = await pool.fetch("""
-                        SELECT us.vehicle_id, us.device_id,
-                               t.lat, t.lon, t.speed, t.ignition, t.ts
-                        FROM update_status us
-                        LEFT JOIN LATERAL (
-                            SELECT lat, lon, speed, ignition, ts
-                            FROM telemetry_raw WHERE device_id = us.device_id
-                            ORDER BY ts DESC LIMIT 1
-                        ) t ON true
-                        ORDER BY us.vehicle_id
-                    """)
-                    data = json.dumps([dict(r) for r in rows], default=str)
+                    # [NEW — prompt #8] cache-aside: เช็ค Redis ก่อน
+                    # query DB เสมอ, fallback DB อัตโนมัติถ้า cache
+                    # miss หรือ Redis ล่ม (ดู _get_fleet_live_data())
+                    data_list = await _get_fleet_live_data(pool)
+                    data = json.dumps(data_list, default=str)
                     yield f"data: {data}\n\n"
                 except asyncio.CancelledError:
                     raise

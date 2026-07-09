@@ -28,6 +28,15 @@ class Settings(BaseSettings):
     # รหัสลับสำหรับตรวจสอบความถูกต้องข้อมูล (ต้องตรงกับฝั่ง ESP32)
     HMAC_SECRET: str = "fleet_hmac_secret_KTC001_2026"
 
+    # ── Redis (FDD §11.1 Services Architecture) ────────────────
+    # "Cache | Redis 7 | 6379 | Session, rate limit, real-time dashboard"
+    # ค่า default ปลอดภัยสำหรับ dev (localhost) — production ตั้งผ่าน .env
+    # เหมือน DB_HOST/MQTT_HOST (docker-compose จะ override เป็น
+    # REDIS_HOST=redis ผ่าน environment: เช่นเดียวกับ DB_HOST/MQTT_HOST)
+    REDIS_HOST: str = "localhost"
+    REDIS_PORT: int = 6379
+    REDIS_DB: int = 0
+
     # โดดค่าจากไฟล์ .env โดยอัตโนมัติ
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

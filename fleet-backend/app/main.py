@@ -19,6 +19,11 @@ from app.database import (
     get_db_pool,
 )
 
+from app.cache import (
+    create_redis_pool,
+    close_redis_pool,
+)
+
 from app.services.mqtt_subscriber import (
     mqtt_subscriber_task,
 )
@@ -152,6 +157,19 @@ async def lifespan(app: FastAPI):
         logger.info("Database connected")
 
         #
+        # 1b. Create Redis Pool (FDD §11.1 — Session, rate limit,
+        #     real-time dashboard cache)
+        #
+        # หมายเหตุ: create_redis_pool() ไม่ raise แม้ Redis จะต่อไม่ได้
+        # (คืน None แล้ว log warning แทน) — Redis เป็น optional cache
+        # layer ไม่ใช่ hard dependency เหมือน DB จึงไม่ทำให้ startup
+        # ทั้งหมด fail ถ้า Redis ล่มอยู่ตอน deploy
+        #
+        await create_redis_pool()
+
+        logger.info("Redis pool initialized (or degraded gracefully if unavailable)")
+
+        #
         # 2. Start MQTT Worker
         #
         mqtt_task = asyncio.create_task(
@@ -212,6 +230,15 @@ async def lifespan(app: FastAPI):
 
             except Exception:
                 logger.exception("Trip logs retention worker shutdown error")
+
+        #
+        # 2b. Close Redis Pool
+        #
+        # ปิดก่อน close_db_pool() — ลำดับ shutdown ย้อนกลับจากตอน
+        # startup (Redis ถูกสร้างหลัง DB จึงปิดก่อน DB) โดยไม่แตะ
+        # ลำดับเดิมของ MQTT/DB ที่มีอยู่แล้วเลย
+        #
+        await close_redis_pool()
 
         #
         # 3. Close Database Pool
