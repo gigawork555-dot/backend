@@ -2,6 +2,11 @@
 """
 Coverage target (FDD §14.2): event_processor.py >= 90%
 
+[แก้ไข] ทุก assert ถูกแทนที่ด้วย check()/check_is() จาก conftest.py
+เพื่อ print ค่า actual/expected จริงก่อนเช็ค — รันด้วย `-v -s` เพื่อดูค่า:
+
+    docker compose run --rm backend pytest tests/test_event_processor.py -v -s
+
 Covers:
 - filter_imu_noise_event() backward-compat helper (ax/ay/az axis mapping,
   None-safety on ax/ay)
@@ -25,16 +30,15 @@ import sys
 import pytest
 
 # ── Path bootstrap ──────────────────────────────────────────────
-# ทำให้ `import app.services...` เจอ ไม่ว่าจะรันด้วยวิธีไหน:
-#   - pytest tests/                              (pytest จัดการ sys.path ให้เองอยู่แล้ว)
-#   - python tests/test_event_processor.py        (จาก repo root)
-#   - python test_event_processor.py              (จากภายใน tests/ เอง)
-#   - python -m tests.test_event_processor         (จาก repo root)
-# โดยการแทรก repo root (parent ของโฟลเดอร์ tests/) เข้า sys.path[0]
-# ก่อนบรรทัด import ใดๆ ที่อ้างถึง `app`
 _REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
+
+_TEST_DIR = os.path.dirname(__file__)
+if _TEST_DIR not in sys.path:
+    sys.path.insert(0, _TEST_DIR)
+
+from conftest import check, check_is, check_approx, check_range  # noqa: E402
 
 from app.services.event_processor import (  # noqa: E402
     filter_imu_noise_event,
@@ -72,40 +76,40 @@ def cfg(**overrides):
 
 def test_filter_imu_noise_event_detects_harsh_braking():
     result = filter_imu_noise_event(ax=-0.5, ay=0.0, az=1.0)
-    assert result["is_harsh_braking"] is True
-    assert result["is_harsh_acceleration"] is False
-    assert result["is_harsh_cornering"] is False
+    check_is("is_harsh_braking", result["is_harsh_braking"], True)
+    check_is("is_harsh_acceleration", result["is_harsh_acceleration"], False)
+    check_is("is_harsh_cornering", result["is_harsh_cornering"], False)
 
 
 def test_filter_imu_noise_event_detects_harsh_acceleration():
     result = filter_imu_noise_event(ax=0.5, ay=0.0, az=1.0)
-    assert result["is_harsh_acceleration"] is True
-    assert result["is_harsh_braking"] is False
+    check_is("is_harsh_acceleration", result["is_harsh_acceleration"], True)
+    check_is("is_harsh_braking", result["is_harsh_braking"], False)
 
 
 def test_filter_imu_noise_event_detects_harsh_cornering():
     result = filter_imu_noise_event(ax=0.0, ay=0.6, az=1.0)
-    assert result["is_harsh_cornering"] is True
+    check_is("is_harsh_cornering", result["is_harsh_cornering"], True)
 
 
 def test_filter_imu_noise_event_detects_harsh_cornering_negative_ay():
     result = filter_imu_noise_event(ax=0.0, ay=-0.6, az=1.0)
-    assert result["is_harsh_cornering"] is True
+    check_is("is_harsh_cornering", result["is_harsh_cornering"], True)
 
 
 def test_filter_imu_noise_event_none_ax_ay_defaults_to_zero():
-    # ax/ay None must not raise — coerced to 0.0 via `ax or 0.0`
     result = filter_imu_noise_event(ax=None, ay=None, az=1.0)
-    assert result == {
+    expected = {
         "is_harsh_braking": False,
         "is_harsh_acceleration": False,
         "is_harsh_cornering": False,
     }
+    check("filter_imu_noise_event(None,None,1.0)", result, expected)
 
 
 def test_filter_imu_noise_event_normal_driving_no_flags():
     result = filter_imu_noise_event(ax=0.1, ay=0.1, az=1.0)
-    assert not any(result.values())
+    check("any(result.values())", any(result.values()), False)
 
 
 # =================================================================
@@ -113,23 +117,23 @@ def test_filter_imu_noise_event_normal_driving_no_flags():
 # =================================================================
 
 def test_safe_float_none_returns_zero():
-    assert _safe_float(None) == 0.0
+    check("_safe_float(None)", _safe_float(None), 0.0)
 
 
 def test_safe_float_valid_numeric_string():
-    assert _safe_float("1.5") == 1.5
+    check("_safe_float('1.5')", _safe_float("1.5"), 1.5)
 
 
 def test_safe_float_valid_int():
-    assert _safe_float(7) == 7.0
+    check("_safe_float(7)", _safe_float(7), 7.0)
 
 
 def test_safe_float_malformed_string_returns_zero():
-    assert _safe_float("not-a-number") == 0.0
+    check("_safe_float('not-a-number')", _safe_float("not-a-number"), 0.0)
 
 
 def test_safe_float_malformed_type_returns_zero():
-    assert _safe_float(["1.0"]) == 0.0
+    check("_safe_float(['1.0'])", _safe_float(["1.0"]), 0.0)
 
 
 # =================================================================
@@ -137,24 +141,22 @@ def test_safe_float_malformed_type_returns_zero():
 # =================================================================
 
 def test_calculate_severity_zero_threshold_returns_zero():
-    assert _calculate_severity(5.0, 0) == 0.0
+    check("_calculate_severity(5.0, 0)", _calculate_severity(5.0, 0), 0.0)
 
 
 def test_calculate_severity_negative_threshold_uses_abs():
-    # harsh_brake threshold is naturally negative (-0.4G).
-    # raw ratio = |-0.8| / |-0.4| = 2.0, but result must clamp to 1.0
     severity = _calculate_severity(-0.8, -0.4)
-    assert severity == 1.0
+    check("_calculate_severity(-0.8,-0.4)", severity, 1.0)
 
 
 def test_calculate_severity_clamped_to_one():
     severity = _calculate_severity(10.0, 0.4)
-    assert severity == 1.0
+    check("_calculate_severity(10.0,0.4)", severity, 1.0)
 
 
 def test_calculate_severity_normal_ratio_rounded():
     severity = _calculate_severity(0.2, 0.4)
-    assert severity == 0.5
+    check("_calculate_severity(0.2,0.4)", severity, 0.5)
 
 
 def test_calculate_severity_always_in_unit_interval():
@@ -162,7 +164,7 @@ def test_calculate_severity_always_in_unit_interval():
         (0.0, 0.4), (0.4, 0.4), (0.39, 0.4), (100.0, 0.4), (-5.0, -0.4)
     ]:
         s = _calculate_severity(value, threshold)
-        assert 0.0 <= s <= 1.0
+        check_range(f"_calculate_severity({value},{threshold})", s, 0.0, 1.0)
 
 
 # =================================================================
@@ -171,33 +173,31 @@ def test_calculate_severity_always_in_unit_interval():
 
 def test_detect_harsh_brake_triggers_below_threshold():
     event, severity = _detect_harsh_brake({"ax": -0.5}, cfg())
-    assert event == "harsh_brake"
+    check("event", event, "harsh_brake")
+    print(f"  🔎 severity(>0 expected)      -> actual={severity!r}")
     assert severity > 0
 
 
 def test_detect_harsh_brake_boundary_exactly_at_threshold_not_triggered():
-    # condition is strictly `ax < threshold`; ax == -0.4 must NOT trigger
     event, severity = _detect_harsh_brake({"ax": -0.4}, cfg())
-    assert event == ""
-    assert severity == 0.0
+    check("event", event, "")
+    check("severity", severity, 0.0)
 
 
 def test_detect_harsh_brake_boundary_just_under_threshold_not_triggered():
-    # -0.39 is less severe than -0.4 -> should not trigger
     event, severity = _detect_harsh_brake({"ax": -0.39}, cfg())
-    assert event == ""
+    check("event", event, "")
 
 
 def test_detect_harsh_brake_boundary_just_over_threshold_triggers():
-    # -0.41 is more negative than -0.4 -> triggers
     event, severity = _detect_harsh_brake({"ax": -0.41}, cfg())
-    assert event == "harsh_brake"
+    check("event", event, "harsh_brake")
 
 
 def test_detect_harsh_brake_missing_ax_no_trigger():
     event, severity = _detect_harsh_brake({}, cfg())
-    assert event == ""
-    assert severity == 0.0
+    check("event", event, "")
+    check("severity", severity, 0.0)
 
 
 # =================================================================
@@ -206,23 +206,24 @@ def test_detect_harsh_brake_missing_ax_no_trigger():
 
 def test_detect_harsh_acceleration_triggers_above_threshold():
     event, severity = _detect_harsh_acceleration({"ax": 0.5}, cfg())
-    assert event == "harsh_acceleration"
+    check("event", event, "harsh_acceleration")
+    print(f"  🔎 severity(>0 expected)      -> actual={severity!r}")
     assert severity > 0
 
 
 def test_detect_harsh_acceleration_boundary_exactly_at_threshold_not_triggered():
     event, severity = _detect_harsh_acceleration({"ax": 0.4}, cfg())
-    assert event == ""
+    check("event", event, "")
 
 
 def test_detect_harsh_acceleration_boundary_just_under_not_triggered():
     event, severity = _detect_harsh_acceleration({"ax": 0.39}, cfg())
-    assert event == ""
+    check("event", event, "")
 
 
 def test_detect_harsh_acceleration_boundary_just_over_triggers():
     event, severity = _detect_harsh_acceleration({"ax": 0.41}, cfg())
-    assert event == "harsh_acceleration"
+    check("event", event, "harsh_acceleration")
 
 
 # =================================================================
@@ -231,27 +232,27 @@ def test_detect_harsh_acceleration_boundary_just_over_triggers():
 
 def test_detect_harsh_cornering_triggers_positive_ay():
     event, severity = _detect_harsh_cornering({"ay": 0.5}, cfg())
-    assert event == "harsh_cornering"
+    check("event", event, "harsh_cornering")
 
 
 def test_detect_harsh_cornering_triggers_negative_ay():
     event, severity = _detect_harsh_cornering({"ay": -0.5}, cfg())
-    assert event == "harsh_cornering"
+    check("event", event, "harsh_cornering")
 
 
 def test_detect_harsh_cornering_boundary_exactly_at_threshold_not_triggered():
     event, severity = _detect_harsh_cornering({"ay": 0.4}, cfg())
-    assert event == ""
+    check("event", event, "")
 
 
 def test_detect_harsh_cornering_boundary_just_under_not_triggered():
     event, severity = _detect_harsh_cornering({"ay": 0.39}, cfg())
-    assert event == ""
+    check("event", event, "")
 
 
 def test_detect_harsh_cornering_boundary_just_over_triggers():
     event, severity = _detect_harsh_cornering({"ay": 0.41}, cfg())
-    assert event == "harsh_cornering"
+    check("event", event, "harsh_cornering")
 
 
 # =================================================================
@@ -260,30 +261,29 @@ def test_detect_harsh_cornering_boundary_just_over_triggers():
 
 def test_detect_bump_triggers_above_positive_threshold():
     event, severity = _detect_bump({"az": 3.5}, cfg())
-    assert event == "bump"
-    assert 0.0 <= severity <= 1.0
+    check("event", event, "bump")
+    check_range("severity", severity, 0.0, 1.0)
 
 
 def test_detect_bump_triggers_below_negative_threshold():
     event, severity = _detect_bump({"az": -3.5}, cfg())
-    assert event == "bump"
+    check("event", event, "bump")
 
 
 def test_detect_bump_boundary_exactly_at_threshold_not_triggered():
     event, severity = _detect_bump({"az": 3.0}, cfg())
-    assert event == ""
+    check("event", event, "")
 
 
 def test_detect_bump_uses_default_module_constant_when_not_configured():
-    # config without "threshold_bump" key -> falls back to BUMP_THRESHOLD_G
     event, severity = _detect_bump({"az": BUMP_THRESHOLD_G + 0.1}, {})
-    assert event == "bump"
+    check("event", event, "bump")
 
 
 def test_detect_bump_normal_gravity_no_trigger():
     event, severity = _detect_bump({"az": 1.0}, cfg())
-    assert event == ""
-    assert severity == 0.0
+    check("event", event, "")
+    check("severity", severity, 0.0)
 
 
 # =================================================================
@@ -292,23 +292,24 @@ def test_detect_bump_normal_gravity_no_trigger():
 
 def test_detect_speeding_triggers_above_threshold():
     event, severity = _detect_speeding({"speed": 110}, cfg())
-    assert event == "speeding"
+    check("event", event, "speeding")
+    print(f"  🔎 severity(>0 expected)      -> actual={severity!r}")
     assert severity > 0
 
 
 def test_detect_speeding_boundary_exactly_at_threshold_not_triggered():
     event, severity = _detect_speeding({"speed": 90}, cfg())
-    assert event == ""
+    check("event", event, "")
 
 
 def test_detect_speeding_below_threshold_not_triggered():
     event, severity = _detect_speeding({"speed": 60}, cfg())
-    assert event == ""
+    check("event", event, "")
 
 
 def test_detect_speeding_uses_default_threshold_when_missing():
     event, severity = _detect_speeding({"speed": 95}, {})
-    assert event == "speeding"
+    check("event", event, "speeding")
 
 
 # =================================================================
@@ -319,44 +320,43 @@ def test_detect_idling_triggers_when_all_conditions_met():
     event, severity = _detect_idling(
         {"speed": 0.0, "rpm": 800, "ignition": True}, cfg()
     )
-    assert event == "idling"
-    assert severity == 1.0
+    check("event", event, "idling")
+    check("severity", severity, 1.0)
 
 
 def test_detect_idling_no_trigger_when_ignition_off():
     event, severity = _detect_idling(
         {"speed": 0.0, "rpm": 800, "ignition": False}, cfg()
     )
-    assert event == ""
+    check("event", event, "")
 
 
 def test_detect_idling_no_trigger_when_moving():
     event, severity = _detect_idling(
         {"speed": 5.0, "rpm": 800, "ignition": True}, cfg()
     )
-    assert event == ""
+    check("event", event, "")
 
 
 def test_detect_idling_no_trigger_when_rpm_too_low():
     event, severity = _detect_idling(
         {"speed": 0.0, "rpm": 400, "ignition": True}, cfg()
     )
-    assert event == ""
+    check("event", event, "")
 
 
 def test_detect_idling_boundary_speed_just_under_one_triggers():
     event, severity = _detect_idling(
         {"speed": 0.99, "rpm": 600, "ignition": True}, cfg()
     )
-    assert event == "idling"
+    check("event", event, "idling")
 
 
 def test_detect_idling_boundary_rpm_exactly_500_not_triggered():
-    # condition is strictly `rpm > 500`
     event, severity = _detect_idling(
         {"speed": 0.0, "rpm": 500, "ignition": True}, cfg()
     )
-    assert event == ""
+    check("event", event, "")
 
 
 # =================================================================
@@ -364,7 +364,7 @@ def test_detect_idling_boundary_rpm_exactly_500_not_triggered():
 # =================================================================
 
 def test_event_handlers_order_matches_fdd_priority():
-    assert EVENT_HANDLERS == (
+    expected_order = (
         _detect_harsh_brake,
         _detect_harsh_acceleration,
         _detect_harsh_cornering,
@@ -372,6 +372,9 @@ def test_event_handlers_order_matches_fdd_priority():
         _detect_bump,
         _detect_idling,
     )
+    actual_names = [h.__name__ for h in EVENT_HANDLERS]
+    expected_names = [h.__name__ for h in expected_order]
+    check("EVENT_HANDLERS order", actual_names, expected_names)
 
 
 # =================================================================
@@ -381,74 +384,62 @@ def test_event_handlers_order_matches_fdd_priority():
 def test_process_event_no_match_returns_empty_event():
     payload = {"ax": 0.0, "ay": 0.0, "az": 1.0, "speed": 30, "rpm": 1500, "ignition": True}
     result = process_event(payload, cfg())
-    assert result["event"] == ""
-    assert result["event_severity"] == 0.0
+    check("result['event']", result["event"], "")
+    check("result['event_severity']", result["event_severity"], 0.0)
 
 
 def test_process_event_brake_wins_over_all_others_when_multiple_match():
-    # ax triggers both brake AND accel-shaped severity checks would be
-    # impossible simultaneously (ax can't be both < -0.4 and > 0.4), so
-    # to prove "brake wins first" we make brake AND speeding both true —
-    # brake must be returned since it's earlier in EVENT_HANDLERS.
     payload = {
-        "ax": -0.9,        # triggers harsh_brake
-        "speed": 150,       # would also trigger speeding
+        "ax": -0.9,
+        "speed": 150,
         "rpm": 3000,
         "ignition": True,
     }
     result = process_event(payload, cfg())
-    assert result["event"] == "harsh_brake"
+    check("result['event']", result["event"], "harsh_brake")
 
 
 def test_process_event_speeding_wins_over_bump_and_idling():
     payload = {
-        "speed": 150,   # triggers speeding
-        "az": 5.0,      # would also trigger bump
+        "speed": 150,
+        "az": 5.0,
         "rpm": 0,
         "ignition": False,
     }
     result = process_event(payload, cfg())
-    assert result["event"] == "speeding"
+    check("result['event']", result["event"], "speeding")
 
 
 def test_process_event_bump_wins_over_idling():
     payload = {
-        "az": 5.0,       # triggers bump
-        "speed": 0.0,    # would also trigger idling
+        "az": 5.0,
+        "speed": 0.0,
         "rpm": 800,
         "ignition": True,
     }
     result = process_event(payload, cfg())
-    assert result["event"] == "bump"
+    check("result['event']", result["event"], "bump")
 
 
 def test_process_event_idling_returned_when_only_idling_matches():
     payload = {"speed": 0.0, "rpm": 800, "ignition": True, "ax": 0.0, "ay": 0.0, "az": 1.0}
     result = process_event(payload, cfg())
-    assert result["event"] == "idling"
-    assert result["event_severity"] == 1.0
+    check("result['event']", result["event"], "idling")
+    check("result['event_severity']", result["event_severity"], 1.0)
 
 
 def test_process_event_does_not_mutate_input_payload():
     payload = {"ax": -0.9, "speed": 30, "rpm": 1000, "ignition": True}
     original = dict(payload)
     process_event(payload, cfg())
-    assert payload == original
+    check("payload (unchanged)", payload, original)
 
 
 def test_process_event_severity_always_in_unit_interval():
     payload = {"ax": -50.0, "speed": 30, "rpm": 1000, "ignition": True}
     result = process_event(payload, cfg())
-    assert 0.0 <= result["event_severity"] <= 1.0
+    check_range("result['event_severity']", result["event_severity"], 0.0, 1.0)
 
 
-# =================================================================
-# Standalone runner — เปิดทางให้เรียก `python tests/test_event_processor.py`
-# ได้โดยตรง โดยยังใช้ pytest engine เต็มรูปแบบ (ไม่ใช่ manual test loop)
-#
-# ปกติ pytest จะ auto-discover ไฟล์ tests/*.py เอง — บล็อกนี้มีไว้แค่
-# กรณีอยากรันไฟล์เดียวเร็วๆ ตอน dev โดยไม่พิมพ์ `pytest tests/test_event_processor.py`
-# =================================================================
 if __name__ == "__main__":
-    import sys
-    raise SystemExit(pytest.main([__file__, "-v"] + sys.argv[1:]))
+    raise SystemExit(pytest.main([__file__, "-v", "-s"] + sys.argv[1:]))
