@@ -1,28 +1,6 @@
-# tests/test_auth_routes.py
+# tests/api_test_auth_routes.py
 """
 Coverage target: app/auth/routes.py (+ app/auth/dependencies.py integration)
-
-Endpoints covered:
-  - POST /auth/login     : OAuth2 password flow -> JWT access token
-  - GET  /auth/me         : current user via JWT bearer
-  - POST /auth/register  : admin-only user creation
-
-Testing strategy
------------------
-- /auth/login and /auth/register go through `get_db_pool()` ->
-  `pool.acquire()` (async context manager) -> plain functions in
-  app.auth.models, which we don't need to mock separately since they
-  just wrap conn.fetchrow/execute — we mock the connection directly.
-- /auth/me and /auth/register additionally depend on
-  `get_current_user_jwt` / `require_admin`, which decode a real JWT via
-  `app.auth.dependencies.decode_access_token`. Rather than crafting real
-  bcrypt hashes and JWTs by hand for every test, we override those two
-  FastAPI dependencies directly via `app.dependency_overrides` — this
-  is the standard, supported way to bypass auth internals in tests
-  while still exercising real routing/business logic in the handler.
-- For /auth/login we DO exercise the real bcrypt/JWT code path (via a
-  real hash + real decode) for at least one full round-trip test, to
-  make sure the actual crypto wiring works end-to-end.
 """
 
 from __future__ import annotations
@@ -47,6 +25,12 @@ from fastapi.testclient import TestClient  # noqa: E402
 _REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
+
+_TEST_DIR = os.path.dirname(__file__)
+if _TEST_DIR not in sys.path:
+    sys.path.insert(0, _TEST_DIR)
+
+from conftest import check, check_is, check_approx  # noqa: E402
 
 from app.auth import routes as auth_routes          # noqa: E402
 from app.auth.dependencies import (                 # noqa: E402
@@ -113,12 +97,13 @@ def test_login_success_full_roundtrip(client, conn):
         data={"username": "thaitanawut", "password": "secret123"},
     )
 
-    assert resp.status_code == 200
+    check("resp.status_code", resp.status_code, 200)
     body = resp.json()
-    assert body["token_type"] == "bearer"
-    assert body["username"] == "thaitanawut"
-    assert body["role"] == "admin"
-    assert body["access_token"]  # non-empty JWT string
+    check("body['token_type']", body["token_type"], "bearer")
+    check("body['username']", body["username"], "thaitanawut")
+    check("body['role']", body["role"], "admin")
+    print(f"  🔎 {'access_token non-empty':<28} -> actual={bool(body['access_token'])}")
+    assert body["access_token"]
 
 
 def test_login_wrong_password_returns_401(client, conn):
@@ -133,7 +118,7 @@ def test_login_wrong_password_returns_401(client, conn):
         data={"username": "thaitanawut", "password": "wrong-password"},
     )
 
-    assert resp.status_code == 401
+    check("resp.status_code (wrong password)", resp.status_code, 401)
 
 
 def test_login_unknown_username_returns_401(client, conn):
@@ -144,7 +129,7 @@ def test_login_unknown_username_returns_401(client, conn):
         data={"username": "ghost", "password": "whatever"},
     )
 
-    assert resp.status_code == 401
+    check("resp.status_code (unknown user)", resp.status_code, 401)
 
 
 def test_login_db_error_returns_500(client, conn):
@@ -155,12 +140,12 @@ def test_login_db_error_returns_500(client, conn):
         data={"username": "thaitanawut", "password": "secret123"},
     )
 
-    assert resp.status_code == 500
+    check("resp.status_code (db error)", resp.status_code, 500)
 
 
 def test_login_missing_form_fields_returns_422(client):
     resp = client.post("/auth/login", data={})
-    assert resp.status_code == 422
+    check("resp.status_code (missing fields)", resp.status_code, 422)
 
 
 # =================================================================
@@ -178,17 +163,15 @@ def test_get_me_returns_current_user(app_with_pool):
 
     resp = client.get("/auth/me")
 
-    assert resp.status_code == 200
+    check("resp.status_code", resp.status_code, 200)
     body = resp.json()
-    assert body["username"] == "thaitanawut"
-    assert body["role"] == "admin"
+    check("body['username']", body["username"], "thaitanawut")
+    check("body['role']", body["role"], "admin")
 
 
 def test_get_me_without_token_returns_401(client):
-    # no dependency override -> real get_current_user_jwt runs, no bearer
-    # token supplied -> oauth2_scheme yields empty token -> 401
     resp = client.get("/auth/me")
-    assert resp.status_code == 401
+    check("resp.status_code (no token)", resp.status_code, 401)
 
 
 # =================================================================
@@ -204,11 +187,10 @@ def test_register_user_success_as_admin(app_with_pool):
     app.dependency_overrides[require_admin] = _fake_admin
     client = TestClient(app)
 
-    # existing-user lookup -> None (no duplicate)
     conn.fetchrow = AsyncMock(side_effect=[
-        None,  # get_user_by_username() during duplicate check
+        None,
         {"id": 2, "username": "newintern", "full_name": "New Intern",
-         "role": "viewer", "created_at": None},  # INSERT ... RETURNING
+         "role": "viewer", "created_at": None},
     ])
 
     resp = client.post(
@@ -217,9 +199,9 @@ def test_register_user_success_as_admin(app_with_pool):
               "full_name": "New Intern", "role": "viewer"},
     )
 
-    assert resp.status_code == 200
+    check("resp.status_code", resp.status_code, 200)
     body = resp.json()
-    assert body["user"]["username"] == "newintern"
+    check("body['user']['username']", body["user"]["username"], "newintern")
 
 
 def test_register_user_duplicate_username_returns_400(app_with_pool):
@@ -241,7 +223,7 @@ def test_register_user_duplicate_username_returns_400(app_with_pool):
         json={"username": "newintern", "password": "pass1234"},
     )
 
-    assert resp.status_code == 400
+    check("resp.status_code (duplicate)", resp.status_code, 400)
 
 
 def test_register_user_non_admin_rejected(app_with_pool):
@@ -250,8 +232,6 @@ def test_register_user_non_admin_rejected(app_with_pool):
     async def _fake_non_admin():
         return {"user_id": 3, "username": "viewer1", "role": "viewer"}
 
-    # override get_current_user_jwt (used internally by require_admin)
-    # rather than require_admin itself, to exercise the real role check
     app.dependency_overrides[get_current_user_jwt] = _fake_non_admin
     client = TestClient(app)
 
@@ -260,7 +240,7 @@ def test_register_user_non_admin_rejected(app_with_pool):
         json={"username": "someone", "password": "pass1234"},
     )
 
-    assert resp.status_code == 403
+    check("resp.status_code (non-admin)", resp.status_code, 403)
 
 
 def test_register_user_no_auth_token_returns_401(client):
@@ -268,8 +248,8 @@ def test_register_user_no_auth_token_returns_401(client):
         "/auth/register",
         json={"username": "someone", "password": "pass1234"},
     )
-    assert resp.status_code == 401
+    check("resp.status_code (no token)", resp.status_code, 401)
 
 
 if __name__ == "__main__":
-    raise SystemExit(pytest.main([__file__, "-v"] + sys.argv[1:]))
+    raise SystemExit(pytest.main([__file__, "-v", "-s"] + sys.argv[1:]))

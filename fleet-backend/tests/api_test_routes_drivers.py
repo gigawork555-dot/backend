@@ -1,27 +1,7 @@
-# tests/test_routes_drivers.py
+# tests/api_test_routes_drivers.py
 """
 Coverage target: app/api/routes_drivers.py
-
-Endpoints covered:
-  - GET /api/v1/drivers/{driver_id}/bonus         : FDD §12.4 incentive summary
-  - GET /api/v1/drivers/{driver_id}/score          : avg score + tier + monthly trend
-  - GET /api/v1/drivers/{driver_id}/events         : FDD §12.6 event history (pagination/filter)
-  - GET /api/v1/drivers/{driver_id}/fuel-summary   : FDD §2.1 fuel/idling summary
-
-Testing strategy
------------------
-routes_drivers.py does NOT use FastAPI's `Depends(get_db_pool)` — every
-endpoint calls the module-level `get_db_connection()` helper directly,
-which wraps `asyncpg.connect()`. There is no dependency to override via
-`app.dependency_overrides`, so instead we monkeypatch the module
-attribute `routes_drivers.get_db_connection` with an AsyncMock that
-returns our fake connection. Because Python resolves `get_db_connection`
-at call time (not import time) inside each endpoint function, this
-monkeypatch is picked up correctly.
-
-Every endpoint also requires the `APIKEY` header (Security(_verify_api_key)).
-The `client` fixture bakes the correct key into every request by default;
-individual tests override headers to exercise the 403 path.
+... (docstring เดิมคงไว้) ...
 """
 
 from __future__ import annotations
@@ -46,6 +26,12 @@ from fastapi.testclient import TestClient  # noqa: E402
 _REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
+
+_TEST_DIR = os.path.dirname(__file__)
+if _TEST_DIR not in sys.path:
+    sys.path.insert(0, _TEST_DIR)
+
+from conftest import check, check_is, check_approx  # noqa: E402
 
 from app.api import routes_drivers  # noqa: E402
 
@@ -90,9 +76,9 @@ def client(conn, monkeypatch):
 def test_bonus_rejects_missing_api_key():
     app = FastAPI()
     app.include_router(routes_drivers.router)
-    client = TestClient(app)  # no APIKEY header at all
+    client = TestClient(app)
     resp = client.get("/api/v1/drivers/55/bonus")
-    assert resp.status_code == 403
+    check("resp.status_code (no key)", resp.status_code, 403)
 
 
 def test_bonus_rejects_wrong_api_key(conn, monkeypatch):
@@ -103,7 +89,7 @@ def test_bonus_rejects_wrong_api_key(conn, monkeypatch):
     app.include_router(routes_drivers.router)
     client = TestClient(app, headers={"APIKEY": "wrong-key"})
     resp = client.get("/api/v1/drivers/55/bonus")
-    assert resp.status_code == 403
+    check("resp.status_code (wrong key)", resp.status_code, 403)
 
 
 # =================================================================
@@ -112,17 +98,21 @@ def test_bonus_rejects_wrong_api_key(conn, monkeypatch):
 
 def test_bonus_no_trips_returns_zero_defaults(client, conn):
     conn.fetch = AsyncMock(return_value=[])
-    conn.fetchrow = AsyncMock(return_value=None)  # no active config -> fallback
+    conn.fetchrow = AsyncMock(return_value=None)
 
     resp = client.get("/api/v1/drivers/55/bonus?month=6&year=2026")
 
-    assert resp.status_code == 200
+    check("resp.status_code", resp.status_code, 200)
     body = resp.json()
-    assert body["total_trips"] == 0
-    assert body["avg_score"] is None
-    assert body["incentive_tier"] == "D"
-    assert body["bonus_pct"] == 0.0
-    assert body["scoring_config_snapshot"]["score_base"] == 100.0
+    check("body['total_trips']", body["total_trips"], 0)
+    check_is("body['avg_score']", body["avg_score"], None)
+    check("body['incentive_tier']", body["incentive_tier"], "D")
+    check_approx("body['bonus_pct']", body["bonus_pct"], 0.0)
+    check_approx(
+        "body['scoring_config_snapshot']['score_base']",
+        body["scoring_config_snapshot"]["score_base"],
+        100.0,
+    )
 
 
 def test_bonus_computes_avg_and_tier_a(client, conn):
@@ -142,13 +132,13 @@ def test_bonus_computes_avg_and_tier_a(client, conn):
 
     resp = client.get("/api/v1/drivers/55/bonus")
 
-    assert resp.status_code == 200
+    check("resp.status_code", resp.status_code, 200)
     body = resp.json()
-    assert body["total_trips"] == 2
-    assert body["avg_score"] == 93.0
-    assert body["incentive_tier"] == "A"
-    assert body["bonus_pct"] == 10.0
-    assert body["total_harsh_events"] == 1
+    check("body['total_trips']", body["total_trips"], 2)
+    check_approx("body['avg_score']", body["avg_score"], 93.0)
+    check("body['incentive_tier']", body["incentive_tier"], "A")
+    check_approx("body['bonus_pct']", body["bonus_pct"], 10.0)
+    check("body['total_harsh_events']", body["total_harsh_events"], 1)
 
 
 def test_bonus_tier_c_gives_zero_pct_per_fdd(client, conn):
@@ -164,8 +154,8 @@ def test_bonus_tier_c_gives_zero_pct_per_fdd(client, conn):
     resp = client.get("/api/v1/drivers/55/bonus")
 
     body = resp.json()
-    assert body["incentive_tier"] == "C"
-    assert body["bonus_pct"] == 0.0  # [FIX-3] not 2%
+    check("body['incentive_tier']", body["incentive_tier"], "C")
+    check_approx("body['bonus_pct'] (FIX-3, not 2%)", body["bonus_pct"], 0.0)
 
 
 def test_bonus_custom_tier_thresholds_from_query_params(client, conn):
@@ -183,9 +173,8 @@ def test_bonus_custom_tier_thresholds_from_query_params(client, conn):
     )
 
     body = resp.json()
-    # score 80 >= custom tier_a_min (70) -> Tier A under these thresholds
-    assert body["incentive_tier"] == "A"
-    assert body["tier_thresholds"]["tier_a_min"] == 70.0
+    check("body['incentive_tier'] (custom threshold)", body["incentive_tier"], "A")
+    check_approx("body['tier_thresholds']['tier_a_min']", body["tier_thresholds"]["tier_a_min"], 70.0)
 
 
 def test_bonus_non_digit_driver_id_treated_as_zero(client, conn):
@@ -194,8 +183,8 @@ def test_bonus_non_digit_driver_id_treated_as_zero(client, conn):
 
     resp = client.get("/api/v1/drivers/abc/bonus")
 
-    assert resp.status_code == 200
-    assert resp.json()["driver_id"] == "abc"
+    check("resp.status_code", resp.status_code, 200)
+    check("body['driver_id']", resp.json()["driver_id"], "abc")
 
 
 def test_bonus_db_error_returns_500(client, conn, monkeypatch):
@@ -204,7 +193,7 @@ def test_bonus_db_error_returns_500(client, conn, monkeypatch):
         AsyncMock(side_effect=RuntimeError("db down")),
     )
     resp = client.get("/api/v1/drivers/55/bonus")
-    assert resp.status_code == 500
+    check("resp.status_code (db error)", resp.status_code, 500)
 
 
 # =================================================================
@@ -225,11 +214,11 @@ def test_score_returns_summary_and_trend(client, conn):
 
     resp = client.get("/api/v1/drivers/55/score")
 
-    assert resp.status_code == 200
+    check("resp.status_code", resp.status_code, 200)
     body = resp.json()
-    assert body["incentive_tier"] == "B"
-    assert body["hr_alert"] is False
-    assert len(body["monthly_trend"]) == 1
+    check("body['incentive_tier']", body["incentive_tier"], "B")
+    check_is("body['hr_alert']", body["hr_alert"], False)
+    check("len(body['monthly_trend'])", len(body["monthly_trend"]), 1)
 
 
 def test_score_tier_d_triggers_hr_alert(client, conn):
@@ -244,8 +233,8 @@ def test_score_tier_d_triggers_hr_alert(client, conn):
     resp = client.get("/api/v1/drivers/55/score")
 
     body = resp.json()
-    assert body["incentive_tier"] == "D"
-    assert body["hr_alert"] is True
+    check("body['incentive_tier']", body["incentive_tier"], "D")
+    check_is("body['hr_alert']", body["hr_alert"], True)
 
 
 def test_score_no_summary_row_defaults_avg_zero(client, conn):
@@ -254,8 +243,8 @@ def test_score_no_summary_row_defaults_avg_zero(client, conn):
 
     resp = client.get("/api/v1/drivers/55/score")
 
-    assert resp.status_code == 200
-    assert resp.json()["summary"] == {}
+    check("resp.status_code", resp.status_code, 200)
+    check("body['summary']", resp.json()["summary"], {})
 
 
 def test_score_db_error_returns_500(client, conn):
@@ -263,7 +252,7 @@ def test_score_db_error_returns_500(client, conn):
 
     resp = client.get("/api/v1/drivers/55/score")
 
-    assert resp.status_code == 500
+    check("resp.status_code (db error)", resp.status_code, 500)
 
 
 # =================================================================
@@ -283,11 +272,11 @@ def test_events_returns_paginated_results(client, conn):
 
     resp = client.get("/api/v1/drivers/55/events?page=1&limit=10")
 
-    assert resp.status_code == 200
+    check("resp.status_code", resp.status_code, 200)
     body = resp.json()
-    assert body["total"] == 1
-    assert len(body["events"]) == 1
-    assert body["filters"]["event_type"] is None
+    check("body['total']", body["total"], 1)
+    check("len(body['events'])", len(body["events"]), 1)
+    check_is("body['filters']['event_type']", body["filters"]["event_type"], None)
 
 
 def test_events_no_devices_returns_empty(client, conn):
@@ -295,10 +284,10 @@ def test_events_no_devices_returns_empty(client, conn):
 
     resp = client.get("/api/v1/drivers/55/events")
 
-    assert resp.status_code == 200
+    check("resp.status_code", resp.status_code, 200)
     body = resp.json()
-    assert body["events"] == []
-    assert body["total"] == 0
+    check("body['events']", body["events"], [])
+    check("body['total']", body["total"], 0)
 
 
 def test_events_filters_by_event_type(client, conn):
@@ -310,13 +299,13 @@ def test_events_filters_by_event_type(client, conn):
 
     resp = client.get("/api/v1/drivers/55/events?event_type=harsh_brake")
 
-    assert resp.status_code == 200
-    assert resp.json()["filters"]["event_type"] == "harsh_brake"
+    check("resp.status_code", resp.status_code, 200)
+    check("body['filters']['event_type']", resp.json()["filters"]["event_type"], "harsh_brake")
 
 
 def test_events_pagination_limit_boundary_rejected(client):
     resp = client.get("/api/v1/drivers/55/events?limit=1000")
-    assert resp.status_code == 422  # le=500 constraint
+    check("resp.status_code (limit>500)", resp.status_code, 422)
 
 
 def test_events_db_error_returns_500(client, conn):
@@ -324,7 +313,7 @@ def test_events_db_error_returns_500(client, conn):
 
     resp = client.get("/api/v1/drivers/55/events")
 
-    assert resp.status_code == 500
+    check("resp.status_code (db error)", resp.status_code, 500)
 
 
 # =================================================================
@@ -340,16 +329,16 @@ def test_fuel_summary_returns_data(client, conn):
 
     resp = client.get("/api/v1/drivers/55/fuel-summary?months=3")
 
-    assert resp.status_code == 200
+    check("resp.status_code", resp.status_code, 200)
     body = resp.json()
-    assert body["driver_id"] == "55"
-    assert body["unit"] == "ลิตร"
-    assert body["period_months"] == 3
+    check("body['driver_id']", body["driver_id"], "55")
+    check("body['unit']", body["unit"], "ลิตร")
+    check("body['period_months']", body["period_months"], 3)
 
 
 def test_fuel_summary_months_out_of_range_rejected(client):
     resp = client.get("/api/v1/drivers/55/fuel-summary?months=13")
-    assert resp.status_code == 422
+    check("resp.status_code (months>12)", resp.status_code, 422)
 
 
 def test_fuel_summary_no_data_returns_empty_dict_plus_meta(client, conn):
@@ -357,9 +346,8 @@ def test_fuel_summary_no_data_returns_empty_dict_plus_meta(client, conn):
 
     resp = client.get("/api/v1/drivers/55/fuel-summary")
 
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["driver_id"] == "55"
+    check("resp.status_code", resp.status_code, 200)
+    check("body['driver_id']", resp.json()["driver_id"], "55")
 
 
 def test_fuel_summary_db_error_returns_500(client, conn):
@@ -367,8 +355,8 @@ def test_fuel_summary_db_error_returns_500(client, conn):
 
     resp = client.get("/api/v1/drivers/55/fuel-summary")
 
-    assert resp.status_code == 500
+    check("resp.status_code (db error)", resp.status_code, 500)
 
 
 if __name__ == "__main__":
-    raise SystemExit(pytest.main([__file__, "-v"] + sys.argv[1:]))
+    raise SystemExit(pytest.main([__file__, "-v", "-s"] + sys.argv[1:]))

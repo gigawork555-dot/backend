@@ -1,17 +1,6 @@
-# tests/test_routes_trips.py
+# tests/api_test_routes_trips.py
 """
-Coverage target: app/api/routes_trips.py
-
-Endpoints covered (FDD §11.3):
-  - POST  /api/v1/webhook/odoo-sync         : batch pull, cursor via last_sync_timestamp
-  - GET   /api/v1/trips/unsynced            : general polling with filters
-  - PATCH /api/v1/trips/batch/mark-synced   : bulk mark-synced
-  - PATCH /api/v1/trips/{trip_id}/mark-synced : single mark-synced (idempotent)
-  - GET   /api/v1/trips/{trip_id}           : trip detail + events + incentive_tier
-
-This router uses `Depends(get_db_pool)` throughout (no direct
-asyncpg.connect(), no APIKEY auth) — so we can use the same
-dependency-override pattern as test_routes_config_api.py.
+Coverage target: app/api/routes_trips.py (FDD §11.3)
 """
 
 from __future__ import annotations
@@ -37,6 +26,12 @@ from fastapi.testclient import TestClient  # noqa: E402
 _REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
+
+_TEST_DIR = os.path.dirname(__file__)
+if _TEST_DIR not in sys.path:
+    sys.path.insert(0, _TEST_DIR)
+
+from conftest import check, check_is, check_approx  # noqa: E402
 
 from app.api import routes_trips     # noqa: E402
 from app.database import get_db_pool  # noqa: E402
@@ -119,11 +114,12 @@ def test_odoo_sync_webhook_returns_unsynced_batch(client, pool):
 
     resp = client.post("/api/v1/webhook/odoo-sync", json={})
 
-    assert resp.status_code == 200
+    check("resp.status_code", resp.status_code, 200)
     body = resp.json()
-    assert body["total"] == 1
+    check("body['total']", body["total"], 1)
+    print(f"  🔎 {'last_sync_timestamp in body':<28} -> actual={'last_sync_timestamp' in body}")
     assert "last_sync_timestamp" in body
-    assert len(body["trips"]) == 1
+    check("len(body['trips'])", len(body["trips"]), 1)
 
 
 def test_odoo_sync_webhook_with_cursor_filters_created_at(client, pool):
@@ -134,10 +130,10 @@ def test_odoo_sync_webhook_with_cursor_filters_created_at(client, pool):
         json={"last_sync_timestamp": "2026-06-01T00:00:00Z"},
     )
 
-    assert resp.status_code == 200
-    assert resp.json()["total"] == 0
-    # verify the query included the cursor filter
+    check("resp.status_code", resp.status_code, 200)
+    check("body['total']", resp.json()["total"], 0)
     _, call_args, _ = pool.fetch.mock_calls[0]
+    print(f"  🔎 {'SQL contains created_at >':<28} -> actual={'created_at >' in call_args[0]}")
     assert "created_at >" in call_args[0]
 
 
@@ -146,8 +142,8 @@ def test_odoo_sync_webhook_empty_result(client, pool):
 
     resp = client.post("/api/v1/webhook/odoo-sync", json={})
 
-    assert resp.status_code == 200
-    assert resp.json()["trips"] == []
+    check("resp.status_code", resp.status_code, 200)
+    check("body['trips']", resp.json()["trips"], [])
 
 
 def test_odoo_sync_webhook_db_error_returns_500(client, pool):
@@ -155,7 +151,7 @@ def test_odoo_sync_webhook_db_error_returns_500(client, pool):
 
     resp = client.post("/api/v1/webhook/odoo-sync", json={})
 
-    assert resp.status_code == 500
+    check("resp.status_code (db error)", resp.status_code, 500)
 
 
 # =================================================================
@@ -167,10 +163,10 @@ def test_get_unsynced_trips_no_filters(client, pool):
 
     resp = client.get("/api/v1/trips/unsynced")
 
-    assert resp.status_code == 200
+    check("resp.status_code", resp.status_code, 200)
     body = resp.json()
-    assert body["total"] == 1
-    assert body["last_id"] == 7
+    check("body['total']", body["total"], 1)
+    check("body['last_id']", body["last_id"], 7)
 
 
 def test_get_unsynced_trips_with_all_filters(client, pool):
@@ -182,8 +178,8 @@ def test_get_unsynced_trips_with_all_filters(client, pool):
         "&since=2026-06-01T00:00:00Z&last_id=3&limit=50"
     )
 
-    assert resp.status_code == 200
-    assert resp.json()["total"] == 0
+    check("resp.status_code", resp.status_code, 200)
+    check("body['total']", resp.json()["total"], 0)
 
 
 def test_get_unsynced_trips_empty_returns_null_last_id(client, pool):
@@ -191,7 +187,7 @@ def test_get_unsynced_trips_empty_returns_null_last_id(client, pool):
 
     resp = client.get("/api/v1/trips/unsynced")
 
-    assert resp.json()["last_id"] is None
+    check_is("body['last_id']", resp.json()["last_id"], None)
 
 
 def test_get_unsynced_trips_db_error_returns_500(client, pool):
@@ -199,15 +195,13 @@ def test_get_unsynced_trips_db_error_returns_500(client, pool):
 
     resp = client.get("/api/v1/trips/unsynced")
 
-    assert resp.status_code == 500
+    check("resp.status_code (db error)", resp.status_code, 500)
 
 
 def test_unsynced_route_registered_before_trip_id_route(client, pool):
-    # regression guard: "/trips/unsynced" must not be captured by
-    # "/trips/{trip_id}" and cause a 422 int-parsing error
     pool.fetch = AsyncMock(return_value=[])
     resp = client.get("/api/v1/trips/unsynced")
-    assert resp.status_code == 200
+    check("resp.status_code (route precedence)", resp.status_code, 200)
 
 
 # =================================================================
@@ -220,15 +214,15 @@ def test_batch_mark_synced_success(client, pool):
         json={"trip_ids": [1, 2, 3]},
     )
 
-    assert resp.status_code == 200
+    check("resp.status_code", resp.status_code, 200)
     body = resp.json()
-    assert body["status"] == "success"
-    assert body["marked"] == 3
+    check("body['status']", body["status"], "success")
+    check("body['marked']", body["marked"], 3)
 
 
 def test_batch_mark_synced_empty_list_returns_400(client):
     resp = client.patch("/api/v1/trips/batch/mark-synced", json={"trip_ids": []})
-    assert resp.status_code == 400
+    check("resp.status_code (empty list)", resp.status_code, 400)
 
 
 def test_batch_mark_synced_db_error_returns_500(client, conn):
@@ -238,13 +232,12 @@ def test_batch_mark_synced_db_error_returns_500(client, conn):
         "/api/v1/trips/batch/mark-synced", json={"trip_ids": [1]}
     )
 
-    assert resp.status_code == 500
+    check("resp.status_code (db error)", resp.status_code, 500)
 
 
 def test_batch_route_registered_before_trip_id_route(client):
-    # regression guard: "batch" segment must not be parsed as {trip_id}
     resp = client.patch("/api/v1/trips/batch/mark-synced", json={"trip_ids": [9]})
-    assert resp.status_code == 200
+    check("resp.status_code (route precedence)", resp.status_code, 200)
 
 
 # =================================================================
@@ -253,17 +246,17 @@ def test_batch_route_registered_before_trip_id_route(client):
 
 def test_mark_trip_synced_success(client, pool):
     pool.fetchrow = AsyncMock(side_effect=[
-        {"id": 10, "synced_to_odoo": False, "synced_at": None},  # existence check
+        {"id": 10, "synced_to_odoo": False, "synced_at": None},
         {"id": 10, "synced_to_odoo": True,
-         "synced_at": datetime(2026, 6, 1, tzinfo=timezone.utc)},  # UPDATE ... RETURNING
+         "synced_at": datetime(2026, 6, 1, tzinfo=timezone.utc)},
     ])
 
     resp = client.patch("/api/v1/trips/10/mark-synced")
 
-    assert resp.status_code == 200
+    check("resp.status_code", resp.status_code, 200)
     body = resp.json()
-    assert body["status"] == "success"
-    assert body["synced_to_odoo"] is True
+    check("body['status']", body["status"], "success")
+    check_is("body['synced_to_odoo']", body["synced_to_odoo"], True)
 
 
 def test_mark_trip_synced_idempotent_already_synced(client, pool):
@@ -274,8 +267,8 @@ def test_mark_trip_synced_idempotent_already_synced(client, pool):
 
     resp = client.patch("/api/v1/trips/10/mark-synced")
 
-    assert resp.status_code == 200
-    assert resp.json()["status"] == "already_synced"
+    check("resp.status_code", resp.status_code, 200)
+    check("body['status']", resp.json()["status"], "already_synced")
 
 
 def test_mark_trip_synced_not_found_returns_404(client, pool):
@@ -283,7 +276,7 @@ def test_mark_trip_synced_not_found_returns_404(client, pool):
 
     resp = client.patch("/api/v1/trips/999/mark-synced")
 
-    assert resp.status_code == 404
+    check("resp.status_code (not found)", resp.status_code, 404)
 
 
 def test_mark_trip_synced_db_error_returns_500(client, pool):
@@ -291,7 +284,7 @@ def test_mark_trip_synced_db_error_returns_500(client, pool):
 
     resp = client.patch("/api/v1/trips/10/mark-synced")
 
-    assert resp.status_code == 500
+    check("resp.status_code (db error)", resp.status_code, 500)
 
 
 # =================================================================
@@ -307,10 +300,10 @@ def test_get_trip_detail_returns_full_record_with_events(client, pool):
 
     resp = client.get("/api/v1/trips/1")
 
-    assert resp.status_code == 200
+    check("resp.status_code", resp.status_code, 200)
     body = resp.json()
-    assert body["event_count"] == 1
-    assert body["incentive_tier"] == "A"
+    check("body['event_count']", body["event_count"], 1)
+    check("body['incentive_tier']", body["incentive_tier"], "A")
 
 
 def test_get_trip_detail_not_found_returns_404(client, pool):
@@ -318,7 +311,7 @@ def test_get_trip_detail_not_found_returns_404(client, pool):
 
     resp = client.get("/api/v1/trips/9999")
 
-    assert resp.status_code == 404
+    check("resp.status_code (not found)", resp.status_code, 404)
 
 
 def test_get_trip_detail_exclude_gps_track_when_requested(client, pool):
@@ -327,8 +320,10 @@ def test_get_trip_detail_exclude_gps_track_when_requested(client, pool):
 
     resp = client.get("/api/v1/trips/1?include_gps_track=false")
 
-    assert resp.status_code == 200
-    assert "gps_track" not in resp.json()
+    check("resp.status_code", resp.status_code, 200)
+    body = resp.json()
+    print(f"  🔎 {'gps_track not in body':<28} -> actual={'gps_track' not in body}")
+    assert "gps_track" not in body
 
 
 def test_get_trip_detail_tier_boundaries(client, pool):
@@ -337,7 +332,7 @@ def test_get_trip_detail_tier_boundaries(client, pool):
         pool.fetch = AsyncMock(return_value=[])
 
         resp = client.get("/api/v1/trips/1")
-        assert resp.json()["incentive_tier"] == expected_tier
+        check(f"tier @ score={score}", resp.json()["incentive_tier"], expected_tier)
 
 
 def test_get_trip_detail_db_error_returns_500(client, pool):
@@ -345,8 +340,8 @@ def test_get_trip_detail_db_error_returns_500(client, pool):
 
     resp = client.get("/api/v1/trips/1")
 
-    assert resp.status_code == 500
+    check("resp.status_code (db error)", resp.status_code, 500)
 
 
 if __name__ == "__main__":
-    raise SystemExit(pytest.main([__file__, "-v"] + sys.argv[1:]))
+    raise SystemExit(pytest.main([__file__, "-v", "-s"] + sys.argv[1:]))

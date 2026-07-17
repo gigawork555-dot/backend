@@ -1,17 +1,6 @@
-# tests/test_routes_reports.py
+# tests/api_test_routes_reports.py
 """
 Coverage target: app/api/routes_reports.py
-
-Endpoints covered:
-  - GET /api/v1/reports/driver-score            : FDD §12.6 monthly score report
-  - GET /api/v1/reports/fleet-summary            : daily fleet overview
-  - GET /api/v1/reports/fuel-efficiency          : FDD §2.1 per-vehicle fuel report
-  - GET /api/v1/reports/maintenance-forecast     : FDD §2.2 3-trigger maintenance forecast
-
-Same pattern as test_routes_drivers.py: this module calls `_get_db()`
-(wrapping asyncpg.connect()) directly rather than via FastAPI Depends,
-so we monkeypatch `routes_reports._get_db`. All endpoints require the
-APIKEY header via Security(_verify_api_key).
 """
 
 from __future__ import annotations
@@ -36,6 +25,12 @@ from fastapi.testclient import TestClient  # noqa: E402
 _REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
+
+_TEST_DIR = os.path.dirname(__file__)
+if _TEST_DIR not in sys.path:
+    sys.path.insert(0, _TEST_DIR)
+
+from conftest import check, check_is, check_approx  # noqa: E402
 
 from app.api import routes_reports  # noqa: E402
 
@@ -79,7 +74,7 @@ def test_driver_score_rejects_missing_key(conn, monkeypatch):
 
     resp = client.get("/api/v1/reports/driver-score")
 
-    assert resp.status_code == 403
+    check("resp.status_code (no key)", resp.status_code, 403)
 
 
 def test_driver_score_rejects_wrong_key(conn, monkeypatch):
@@ -90,7 +85,7 @@ def test_driver_score_rejects_wrong_key(conn, monkeypatch):
 
     resp = client.get("/api/v1/reports/driver-score")
 
-    assert resp.status_code == 403
+    check("resp.status_code (wrong key)", resp.status_code, 403)
 
 
 # =================================================================
@@ -112,11 +107,11 @@ def test_driver_score_report_assigns_tiers(client, conn):
 
     resp = client.get("/api/v1/reports/driver-score")
 
-    assert resp.status_code == 200
+    check("resp.status_code", resp.status_code, 200)
     body = resp.json()
     tiers = {r["driver_id"]: r["incentive_tier"] for r in body["data"]}
-    assert tiers[1] == "A"
-    assert tiers[2] == "D"
+    check("tiers[1]", tiers[1], "A")
+    check("tiers[2]", tiers[2], "D")
 
 
 def test_driver_score_report_filters_single_driver(client, conn):
@@ -125,9 +120,10 @@ def test_driver_score_report_filters_single_driver(client, conn):
 
     resp = client.get("/api/v1/reports/driver-score?driver_id=42")
 
-    assert resp.status_code == 200
+    check("resp.status_code", resp.status_code, 200)
     _, call_args, _ = conn.fetch.mock_calls[0]
-    assert 42 in call_args  # driver_id passed as bound param
+    print(f"  🔎 {'42 in bound params':<28} -> actual={42 in call_args}")
+    assert 42 in call_args
 
 
 def test_driver_score_report_pagination_metadata(client, conn):
@@ -137,8 +133,8 @@ def test_driver_score_report_pagination_metadata(client, conn):
     resp = client.get("/api/v1/reports/driver-score?page=2&limit=10")
 
     body = resp.json()
-    assert body["page"] == 2
-    assert body["total_pages"] == 3  # ceil(25/10)
+    check("body['page']", body["page"], 2)
+    check("body['total_pages'] (ceil 25/10)", body["total_pages"], 3)
 
 
 def test_driver_score_report_db_error_returns_500(client, conn):
@@ -146,7 +142,7 @@ def test_driver_score_report_db_error_returns_500(client, conn):
 
     resp = client.get("/api/v1/reports/driver-score")
 
-    assert resp.status_code == 500
+    check("resp.status_code (db error)", resp.status_code, 500)
 
 
 # =================================================================
@@ -163,15 +159,15 @@ def test_fleet_summary_returns_daily_rows(client, conn):
 
     resp = client.get("/api/v1/reports/fleet-summary?days=7")
 
-    assert resp.status_code == 200
+    check("resp.status_code", resp.status_code, 200)
     body = resp.json()
-    assert body["total_days"] == 1
-    assert body["days"] == 7
+    check("body['total_days']", body["total_days"], 1)
+    check("body['days']", body["days"], 7)
 
 
 def test_fleet_summary_days_out_of_range_rejected(client):
     resp = client.get("/api/v1/reports/fleet-summary?days=1000")
-    assert resp.status_code == 422
+    check("resp.status_code (days>365)", resp.status_code, 422)
 
 
 def test_fleet_summary_db_error_returns_500(client, conn):
@@ -179,7 +175,7 @@ def test_fleet_summary_db_error_returns_500(client, conn):
 
     resp = client.get("/api/v1/reports/fleet-summary")
 
-    assert resp.status_code == 500
+    check("resp.status_code (db error)", resp.status_code, 500)
 
 
 # =================================================================
@@ -196,10 +192,10 @@ def test_fuel_efficiency_returns_per_vehicle_rows(client, conn):
 
     resp = client.get("/api/v1/reports/fuel-efficiency?days=30")
 
-    assert resp.status_code == 200
+    check("resp.status_code", resp.status_code, 200)
     body = resp.json()
-    assert body["total_vehicles"] == 1
-    assert body["unit"] == "ลิตร"
+    check("body['total_vehicles']", body["total_vehicles"], 1)
+    check("body['unit']", body["unit"], "ลิตร")
 
 
 def test_fuel_efficiency_empty_result(client, conn):
@@ -207,8 +203,8 @@ def test_fuel_efficiency_empty_result(client, conn):
 
     resp = client.get("/api/v1/reports/fuel-efficiency")
 
-    assert resp.status_code == 200
-    assert resp.json()["data"] == []
+    check("resp.status_code", resp.status_code, 200)
+    check("body['data']", resp.json()["data"], [])
 
 
 def test_fuel_efficiency_db_error_returns_500(client, conn):
@@ -216,7 +212,7 @@ def test_fuel_efficiency_db_error_returns_500(client, conn):
 
     resp = client.get("/api/v1/reports/fuel-efficiency")
 
-    assert resp.status_code == 500
+    check("resp.status_code (db error)", resp.status_code, 500)
 
 
 # =================================================================
@@ -236,11 +232,13 @@ def test_maintenance_forecast_flags_vehicles_needing_service(client, conn):
 
     resp = client.get("/api/v1/reports/maintenance-forecast")
 
-    assert resp.status_code == 200
+    check("resp.status_code", resp.status_code, 200)
     body = resp.json()
-    assert body["needs_maintenance"] == 1
+    check("body['needs_maintenance']", body["needs_maintenance"], 1)
     reasons = body["data"][0]["maintenance_reasons"]
+    print(f"  🔎 {'reasons contains ระยะทาง':<28} -> actual={any('ระยะทาง' in r for r in reasons)}")
     assert any("ระยะทาง" in r for r in reasons)
+    print(f"  🔎 {'reasons contains เบรคหัก':<28} -> actual={any('เบรคหัก' in r for r in reasons)}")
     assert any("เบรคหัก" in r for r in reasons)
 
 
@@ -251,10 +249,10 @@ def test_maintenance_forecast_custom_thresholds_reflected_in_response(client, co
         "/api/v1/reports/maintenance-forecast?km_high=1000&km_medium=500"
     )
 
-    assert resp.status_code == 200
+    check("resp.status_code", resp.status_code, 200)
     thresholds = resp.json()["thresholds_used"]
-    assert thresholds["trigger_1_distance"]["high"] == 1000
-    assert thresholds["trigger_1_distance"]["medium"] == 500
+    check("thresholds['trigger_1_distance']['high']", thresholds["trigger_1_distance"]["high"], 1000)
+    check("thresholds['trigger_1_distance']['medium']", thresholds["trigger_1_distance"]["medium"], 500)
 
 
 def test_maintenance_forecast_no_vehicles_needing_service(client, conn):
@@ -270,10 +268,10 @@ def test_maintenance_forecast_no_vehicles_needing_service(client, conn):
 
     resp = client.get("/api/v1/reports/maintenance-forecast")
 
-    assert resp.status_code == 200
+    check("resp.status_code", resp.status_code, 200)
     body = resp.json()
-    assert body["needs_maintenance"] == 0
-    assert body["data"][0]["maintenance_reasons"] == []
+    check("body['needs_maintenance']", body["needs_maintenance"], 0)
+    check("body['data'][0]['maintenance_reasons']", body["data"][0]["maintenance_reasons"], [])
 
 
 def test_maintenance_forecast_db_error_returns_500(client, conn):
@@ -281,8 +279,8 @@ def test_maintenance_forecast_db_error_returns_500(client, conn):
 
     resp = client.get("/api/v1/reports/maintenance-forecast")
 
-    assert resp.status_code == 500
+    check("resp.status_code (db error)", resp.status_code, 500)
 
 
 if __name__ == "__main__":
-    raise SystemExit(pytest.main([__file__, "-v"] + sys.argv[1:]))
+    raise SystemExit(pytest.main([__file__, "-v", "-s"] + sys.argv[1:]))
