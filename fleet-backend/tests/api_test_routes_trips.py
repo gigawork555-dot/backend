@@ -257,7 +257,11 @@ def test_unsynced_route_registered_before_trip_id_route(client, pool):
 # PATCH /api/v1/trips/batch/mark-synced
 # =================================================================
 
-def test_batch_mark_synced_success(client, pool):
+def test_batch_mark_synced_success(client, conn):
+    # [FIX #3] mock conn.execute ให้คืนค่าตรงกับที่ UPDATE จริง
+    # เพื่อยืนยันว่า "marked" อ่านมาจากผลจริง ไม่ใช่ len(trip_ids)
+    conn.execute = AsyncMock(return_value="UPDATE 3")
+
     resp = client.patch(
         "/api/v1/trips/batch/mark-synced",
         json={"trip_ids": [1, 2, 3]},
@@ -267,6 +271,50 @@ def test_batch_mark_synced_success(client, pool):
     body = resp.json()
     check("body['status']", body["status"], "success")
     check("body['marked']", body["marked"], 3)
+    check("body['requested']", body["requested"], 3)
+
+
+def test_batch_mark_synced_partial_update_reports_actual_count(client, conn):
+    """
+    [FIX #3] core regression test — ส่ง trip_ids 3 ตัว แต่มีแค่ 2 ตัว
+    ที่ update จริง (เช่น อีกตัวไม่มีในระบบ หรือ sync ไปแล้ว) —
+    'marked' ต้องรายงาน 2 ไม่ใช่ 3
+    """
+    conn.execute = AsyncMock(return_value="UPDATE 2")
+
+    resp = client.patch(
+        "/api/v1/trips/batch/mark-synced",
+        json={"trip_ids": [1, 2, 999]},
+    )
+
+    check("resp.status_code", resp.status_code, 200)
+    body = resp.json()
+    check("body['marked'] (actual updated, not input count)", body["marked"], 2)
+    check("body['requested']", body["requested"], 3)
+
+
+def test_batch_mark_synced_zero_updated_when_all_already_synced(client, conn):
+    conn.execute = AsyncMock(return_value="UPDATE 0")
+
+    resp = client.patch(
+        "/api/v1/trips/batch/mark-synced",
+        json={"trip_ids": [1, 2]},
+    )
+
+    check("resp.status_code", resp.status_code, 200)
+    check("body['marked']", resp.json()["marked"], 0)
+
+
+def test_batch_mark_synced_malformed_execute_result_defaults_to_zero(client, conn):
+    conn.execute = AsyncMock(return_value="SOMETHING-UNEXPECTED")
+
+    resp = client.patch(
+        "/api/v1/trips/batch/mark-synced",
+        json={"trip_ids": [1]},
+    )
+
+    check("resp.status_code", resp.status_code, 200)
+    check("body['marked'] (parse failure fallback)", resp.json()["marked"], 0)
 
 
 def test_batch_mark_synced_empty_list_returns_400(client):

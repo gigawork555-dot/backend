@@ -66,8 +66,13 @@ def calculate_advanced_trip_score(
         config.get("weight_speeding", 10.0)
     )
 
+# [Fix #8] 3.0 → 5.0 (FDD §12.3: harsh_brake_deduct default = 5.0)
+    # เดิม fallback ผิดเป็น 3.0 — ตาราง FDD §12.3 ระบุชัดเจนว่า
+    # harsh_brake_deduct default = 5.0 (DB column default ถูกต้อง
+    # อยู่แล้วที่ 5.0 ใน init.sql — บั๊กนี้อยู่แค่ฝั่ง Python fallback
+    # ที่ใช้เมื่อ config ไม่ส่ง key นี้มา)
     weight_harsh_brake = float(
-        config.get("weight_harsh_brake", 3.0)
+        config.get("weight_harsh_brake", 5.0)
     )
 
     weight_harsh_accel = float(

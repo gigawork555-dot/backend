@@ -39,7 +39,7 @@ async def main():
     # ── Event 1: Ignition ON ──────────────────────────────────────
     print("\n🎬 [Event 1/4] สตาร์ทรถยนต์เพื่อเปิดทริปการเดินทาง...")
     start_payload = {
-        "ts": base_ts, "device_id": "KTC-002",
+        "ts": base_ts, "device_id": "KTC-012",
         "lat": 13.7563, "lon": 100.5018,
         "speed": 0.0, "heading": 90, "alt": 10, "hdop": 0.9, "rpm": 850,
         "throttle": 0.0, "engine_load": 15.0, "coolant_temp": 85, "fuel_level": 80.0,

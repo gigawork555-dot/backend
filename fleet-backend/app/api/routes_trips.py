@@ -338,66 +338,65 @@ async def mark_trips_synced_batch(
 # PATCH /api/v1/trips/{trip_id}/mark-synced
 # ─────────────────────────────────────────────────────────────
 
-@router.patch(
-    "/trips/{trip_id}/mark-synced",
-    response_model=MarkSyncedResponse,
-    status_code=200,
-)
-async def mark_trip_synced(
-    trip_id: int,
-    request: Optional[MarkSyncedRequest] = None,
+@router.patch("/trips/batch/mark-synced", status_code=200)
+async def mark_trips_synced_batch(
+    request: BatchMarkSyncedRequest,
     pool: asyncpg.Pool = Depends(get_db_pool),
-    api_key: str = Security(_verify_api_key),  # [FIX]
+    api_key: str = Security(_verify_api_key),
 ):
     """
-    Mark trip เดี่ยวว่า sync ไป Odoo แล้ว
-    Idempotent: เรียกซ้ำได้ ไม่ error
+    Mark หลาย trip ว่า sync แล้วพร้อมกัน (All-or-Nothing transaction)
 
     **Authentication:** ต้องใส่ APIKEY header (FDD §13)
+
+    Request Body: { "trip_ids": [10, 11, 12] }
+
+    [FIX #3] response field "marked" เดิมคืน len(trip_ids) ของ input
+    เสมอ ไม่ว่า UPDATE จะสำเร็จกี่แถวจริง — ถ้ามี id ที่ไม่มีในระบบ
+    หรือ sync ไปแล้ว (synced_to_odoo=true อยู่ก่อน) จำนวนแถวที่ update
+    จริงจะน้อยกว่า len(trip_ids) เสมอ ทำให้ Odoo เข้าใจผิดว่า sync
+    ครบแล้วทั้งที่ยังไม่ครบ กระทบ FDD §13 "Incentive cron reliability:
+    สร้างสำเร็จ 100% ของพนักงานที่มี trip ในรอบ" — trip ที่ไม่ถูก
+    update จริงจะไม่ถูก sync ซ้ำอีก (Odoo cron query เฉพาะ
+    synced_to_odoo=false) ทำให้ trip หายจากการคำนวณ incentive เงียบๆ
+
+    แก้ไข: parse ผลลัพธ์จริงจาก conn.execute() ซึ่ง asyncpg คืนเป็น
+    string รูปแบบ "UPDATE <n>" เอาตัวเลข <n> มาใช้แทน len(trip_ids)
     """
+    if not request.trip_ids:
+        raise HTTPException(status_code=400, detail="trip_ids ว่างเปล่า")
+
     try:
-        trip = await pool.fetchrow(
-            "SELECT id, synced_to_odoo, synced_at FROM trip_logs WHERE id = $1",
-            trip_id,
-        )
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                result = await conn.execute(
+                    """
+                    UPDATE trip_logs
+                    SET synced_to_odoo = true,
+                        synced_at      = NOW()
+                    WHERE id = ANY($1::bigint[])
+                      AND synced_to_odoo = false
+                    """,
+                    request.trip_ids,
+                )
 
-        if not trip:
-            raise HTTPException(status_code=404, detail=f"Trip {trip_id} not found")
+        # [FIX #3] asyncpg execute() คืน string เช่น "UPDATE 2" —
+        # parse เอาตัวเลขจริงมาใช้ ถ้า parse ไม่ได้ (รูปแบบผิดคาด)
+        # fallback เป็น 0 เพื่อไม่ให้ raise แล้วรายงานผิดพลาดแบบเงียบ
+        try:
+            marked_count = int(result.split()[-1])
+        except (ValueError, IndexError, AttributeError):
+            marked_count = 0
 
-        if trip["synced_to_odoo"]:
-            return MarkSyncedResponse(
-                status="already_synced",
-                trip_id=trip_id,
-                synced_to_odoo=True,
-                synced_at=trip["synced_at"],
-            )
+        return {
+            "status":   "success",
+            "marked":   marked_count,
+            "requested": len(request.trip_ids),
+            "trip_ids": request.trip_ids,
+        }
 
-        synced_at = (request.synced_at if request and request.synced_at else None) or datetime.utcnow()
-
-        updated = await pool.fetchrow(
-            """
-            UPDATE trip_logs
-            SET synced_to_odoo = true,
-                synced_at      = $2
-            WHERE id = $1
-            RETURNING id, synced_to_odoo, synced_at
-            """,
-            trip_id,
-            synced_at,
-        )
-
-        return MarkSyncedResponse(
-            status="success",
-            trip_id=trip_id,
-            synced_to_odoo=updated["synced_to_odoo"],
-            synced_at=updated["synced_at"],
-        )
-
-    except HTTPException:
-        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
 
 # ─────────────────────────────────────────────────────────────
 # GET /api/v1/trips/{trip_id}

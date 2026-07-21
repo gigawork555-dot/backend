@@ -109,7 +109,16 @@ def test_harsh_brake_event_applies_penalty():
     result = calculate_advanced_trip_score(data, cfg())
     check("metrics['harsh_brake_count']", result["metrics"]["harsh_brake_count"], 1)
     check_approx("safety_score", result["safety_score"], 100.0 - 3.0)
-
+    
+def test_harsh_brake_weight_fallback_defaults_to_5_per_fdd():
+    """
+    [Fix #8] เมื่อ config ไม่ส่ง weight_harsh_brake มาเลย ต้อง fallback
+    เป็น 5.0 ตาม FDD §12.3 (ไม่ใช่ 3.0 ที่เคยผิด)
+    """
+    data = [point(event="harsh_brake", speed=40)]
+    minimal_config = {"score_base": 100.0}  # ไม่ส่ง weight_harsh_brake
+    result = calculate_advanced_trip_score(data, minimal_config)
+    check_approx("safety_score (fallback 5.0)", result["safety_score"], 100.0 - 5.0)
 
 def test_harsh_acceleration_event_applies_penalty():
     data = [point(event="harsh_acceleration", speed=40)]

@@ -96,7 +96,7 @@ def _make_connection(fetchrow_return):
 async def test_get_active_scoring_config_maps_db_columns_to_calculator_keys():
     db_row = {
         "score_base": 100.0,
-        "harsh_brake_deduct": 3.0,
+        "harsh_brake_deduct": 5.0,
         "harsh_accel_deduct": 3.0,
         "harsh_corner_deduct": 3.0,
         "speeding_deduct": 10.0,
@@ -115,7 +115,7 @@ async def test_get_active_scoring_config_maps_db_columns_to_calculator_keys():
 
     check("config['score_base']", config["score_base"], 100.0)
     check("config['weight_speeding']", config["weight_speeding"], 10.0)
-    check("config['weight_harsh_brake']", config["weight_harsh_brake"], 3.0)
+    check("config['weight_harsh_brake']", config["weight_harsh_brake"], 5.0)  
     check("config['weight_harsh_accel']", config["weight_harsh_accel"], 3.0)
     check("config['weight_harsh_corner']", config["weight_harsh_corner"], 3.0)
     check("config['weight_idling']", config["weight_idling"], 2.0)
@@ -145,7 +145,7 @@ async def test_get_active_scoring_config_defaults_when_row_fields_missing():
 
     check("config['score_base']", config["score_base"], 100.0)
     check("config['weight_speeding']", config["weight_speeding"], 10.0)
-    check("config['weight_harsh_brake']", config["weight_harsh_brake"], 3.0)
+    check("config['weight_harsh_brake']", config["weight_harsh_brake"], 5.0)
     check("config['weight_bump']", config["weight_bump"], 4.0)
     check("config['max_deduct_per_trip']", config["max_deduct_per_trip"], 50.0)
     check("config['threshold_harsh_brake']", config["threshold_harsh_brake"], -0.4)
@@ -168,7 +168,7 @@ async def test_get_active_scoring_config_fallback_when_no_active_config():
 
     check("config['score_base']", config["score_base"], 100.0)
     check("config['weight_speeding']", config["weight_speeding"], 10.0)
-    check("config['weight_harsh_brake']", config["weight_harsh_brake"], 3.0)
+    check("config['weight_harsh_brake']", config["weight_harsh_brake"], 5.0)
     check("config['weight_harsh_accel']", config["weight_harsh_accel"], 3.0)
     check("config['weight_harsh_corner']", config["weight_harsh_corner"], 3.0)
     check("config['weight_idling']", config["weight_idling"], 2.0)

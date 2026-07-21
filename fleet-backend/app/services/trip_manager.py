@@ -133,8 +133,9 @@ async def get_active_scoring_config(
             "weight_speeding":
                 float(raw.get("speeding_deduct",       10.0)),
 
+            # [Fix #8] 3.0 → 5.0 (FDD §12.3: harsh_brake_deduct default = 5.0)
             "weight_harsh_brake":
-                float(raw.get("harsh_brake_deduct",     3.0)),
+                float(raw.get("harsh_brake_deduct",     5.0)),
 
             "weight_harsh_accel":
                 float(raw.get("harsh_accel_deduct",     3.0)),
@@ -198,7 +199,7 @@ async def get_active_scoring_config(
         "score_base":                           100.0,
         # [Fix #6] defaults corrected to match FDD §12.3 table
         "weight_speeding":                       10.0,
-        "weight_harsh_brake":                     3.0,
+        "weight_harsh_brake":                     5.0,   # [Fix #8] FDD §12.3
         "weight_harsh_accel":                     3.0,
         "weight_harsh_corner":                    3.0,
         "weight_idling":                          2.0,
