@@ -1,7 +1,18 @@
 # tests/api_test_routes_config.py
 """
 Coverage target: app/api/routes_config.py
-... (docstring เดิมคงไว้) ...
+
+[FIX] routes_config.py ทุก endpoint ตอนนี้ต้องใช้ APIKEY header
+(Security(_verify_api_key) กับ APIKeyHeader(name="APIKEY")) —
+ไฟล์เทสต์เดิมสร้าง TestClient(app) เปล่าๆ ไม่มี header เลย ทำให้ทุก
+request โดน dependency ปฏิเสธด้วย 403 ก่อนจะถึง business logic เลย
+(เห็นเป็น actual=403 expected=200/404/409/422/500 ทุกเทสต์)
+
+แก้ไข: เพิ่ม VALID_KEY constant และแนบ headers={"APIKEY": VALID_KEY}
+เข้าไปใน TestClient(app, ...) ของ fixture `client` (ตาม pattern
+เดียวกับ api_test_routes_drivers.py / api_test_routes_reports.py ที่
+ทำถูกอยู่แล้ว) เทสต์ที่ตั้งใจทดสอบ "ไม่มี key" หรือ "key ผิด" โดยเฉพาะ
+ยังคงสร้าง TestClient ของตัวเองแยกต่างหาก (ไม่ใช้ fixture นี้) เหมือนเดิม
 """
 
 from __future__ import annotations
@@ -38,6 +49,9 @@ from app.database import get_db_pool       # noqa: E402
 from app.api.routes_config import (        # noqa: E402
     _validate_device_id_format,
 )
+
+# [FIX] ต้องตรงกับ API_KEY ที่ประกาศไว้ใน app/api/routes_config.py
+VALID_KEY = "ktc-fleet-2026-secret"
 
 
 # =================================================================
@@ -102,11 +116,14 @@ def client(pool):
 
     app.dependency_overrides[get_db_pool] = _override_get_db_pool
 
-    return TestClient(app)
+    # [FIX] ต้องแนบ APIKEY header ไปด้วยเสมอ เพราะทุก endpoint ใน
+    # routes_config.py ตอนนี้มี Security(_verify_api_key) แล้ว
+    return TestClient(app, headers={"APIKEY": VALID_KEY})
 
 
 # =================================================================
 # _validate_device_id_format() — หน่วยทดสอบระดับฟังก์ชันล้วน
+# (ไม่เกี่ยวกับ auth เลย ไม่ต้องแก้)
 # =================================================================
 
 def test_validate_device_id_format_accepts_valid_format():
@@ -151,6 +168,39 @@ def test_validate_device_id_format_error_message_includes_field_name():
     with pytest.raises(ValueError, match="new_device_id"):
         _validate_device_id_format("bad", field_name="new_device_id")
     print("  🔎 ValueError message includes field_name -> actual=True expected=True ✅")
+
+
+# =================================================================
+# Auth — smoke tests ยืนยันว่า 403 ทำงานถูกต้องเมื่อไม่มี/ผิด key
+# (ใหม่ — ใช้ TestClient แยก ไม่ใช้ fixture `client` ที่มี key ถูกต้อง)
+# =================================================================
+
+def test_get_devices_rejects_missing_key(pool):
+    app = FastAPI()
+    app.include_router(routes_config.router)
+
+    async def _override():
+        return pool
+
+    app.dependency_overrides[get_db_pool] = _override
+    no_key_client = TestClient(app)
+
+    resp = no_key_client.get("/api/v1/devices")
+    check("resp.status_code (no key)", resp.status_code, 403)
+
+
+def test_get_devices_rejects_wrong_key(pool):
+    app = FastAPI()
+    app.include_router(routes_config.router)
+
+    async def _override():
+        return pool
+
+    app.dependency_overrides[get_db_pool] = _override
+    wrong_key_client = TestClient(app, headers={"APIKEY": "wrong-key"})
+
+    resp = wrong_key_client.get("/api/v1/devices")
+    check("resp.status_code (wrong key)", resp.status_code, 403)
 
 
 # =================================================================

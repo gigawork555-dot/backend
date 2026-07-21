@@ -1,6 +1,17 @@
 # tests/api_test_routes_trips.py
 """
 Coverage target: app/api/routes_trips.py (FDD §11.3)
+
+[FIX] routes_trips.py ทุก endpoint ตอนนี้ต้องใช้ APIKEY header
+(Security(_verify_api_key)) — fixture `client` เดิมสร้าง TestClient(app)
+เปล่าๆ ไม่มี header เลย ทำให้ทุก request โดน 403 ก่อนถึง business logic
+(actual=403 ในทุกเทสต์ รวมถึง KeyError('last_id') / KeyError
+('incentive_tier') ที่เกิดเพราะ response body ตอน 403 คือ
+{"detail": "..."} ไม่ใช่ payload จริงที่เทสต์คาดหวัง)
+
+แก้ไข: เพิ่ม VALID_KEY constant และแนบ headers={"APIKEY": VALID_KEY}
+เข้าไปใน TestClient(app, ...) ของ fixture `client` (ตาม pattern เดียว
+กับ api_test_routes_drivers.py / api_test_routes_reports.py)
 """
 
 from __future__ import annotations
@@ -35,6 +46,9 @@ from conftest import check, check_is, check_approx  # noqa: E402
 
 from app.api import routes_trips     # noqa: E402
 from app.database import get_db_pool  # noqa: E402
+
+# [FIX] ต้องตรงกับ API_KEY ที่ประกาศไว้ใน app/api/routes_trips.py
+VALID_KEY = "ktc-fleet-2026-secret"
 
 
 # =================================================================
@@ -84,7 +98,10 @@ def client(pool):
         return pool
 
     app.dependency_overrides[get_db_pool] = _override
-    return TestClient(app)
+
+    # [FIX] ต้องแนบ APIKEY header เพราะทุก endpoint ใน routes_trips.py
+    # ตอนนี้มี Security(_verify_api_key) แล้ว
+    return TestClient(app, headers={"APIKEY": VALID_KEY})
 
 
 def _trip_row(**overrides):
@@ -103,6 +120,38 @@ def _trip_row(**overrides):
     }
     base.update(overrides)
     return base
+
+
+# =================================================================
+# Auth — smoke tests ยืนยันว่า 403 ทำงานถูกต้องเมื่อไม่มี/ผิด key
+# =================================================================
+
+def test_odoo_sync_webhook_rejects_missing_key(pool):
+    app = FastAPI()
+    app.include_router(routes_trips.router)
+
+    async def _override():
+        return pool
+
+    app.dependency_overrides[get_db_pool] = _override
+    no_key_client = TestClient(app)
+
+    resp = no_key_client.post("/api/v1/webhook/odoo-sync", json={})
+    check("resp.status_code (no key)", resp.status_code, 403)
+
+
+def test_odoo_sync_webhook_rejects_wrong_key(pool):
+    app = FastAPI()
+    app.include_router(routes_trips.router)
+
+    async def _override():
+        return pool
+
+    app.dependency_overrides[get_db_pool] = _override
+    wrong_key_client = TestClient(app, headers={"APIKEY": "wrong-key"})
+
+    resp = wrong_key_client.post("/api/v1/webhook/odoo-sync", json={})
+    check("resp.status_code (wrong key)", resp.status_code, 403)
 
 
 # =================================================================
