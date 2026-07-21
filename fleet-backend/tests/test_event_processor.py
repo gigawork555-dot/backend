@@ -7,9 +7,24 @@ Coverage target (FDD §14.2): event_processor.py >= 90%
 
     docker compose run --rm backend pytest tests/test_event_processor.py -v -s
 
+[FIX #7 — this revision]
+filter_imu_noise_event() ถูกแก้ threshold ให้ตรง FDD v1.4 §10.4
+(accel 0.3->0.4, corner 0.5->0.4) และเพิ่ม is_bump (az > +3G / < -3G)
+ที่หายไปทั้งหมด — เทสต์ที่ได้รับผลกระทบโดยตรง:
+
+  - test_filter_imu_noise_event_none_ax_ay_defaults_to_zero()
+    เดิมเทียบ dict แบบ exact-match กับแค่ 3 keys เท่านั้น ตอนนี้ผลลัพธ์
+    จริงมี 4 keys (เพิ่ม is_bump) ต้องอัปเดต `expected` ให้มี
+    "is_bump": False ด้วย ไม่งั้น dict เทียบไม่เท่ากันแน่นอน
+
+  - เทสต์ boundary เดิมทั้งหมด (ax=0.5, ay=0.6, ay=-0.6, ax=-0.5)
+    ยังคงผ่านเหมือนเดิม เพราะค่าที่ทดสอบไม่ได้อยู่ในช่วงหัวต่อ
+    (0.3-0.4 หรือ 0.4-0.5) ที่ threshold เปลี่ยนไป — เพิ่มเทสต์ใหม่
+    เจาะจงช่วงหัวต่อนี้แยกไว้ด้านล่างเพื่อ lock พฤติกรรมใหม่จริงๆ
+
 Covers:
 - filter_imu_noise_event() backward-compat helper (ax/ay/az axis mapping,
-  None-safety on ax/ay)
+  None-safety on ax/ay/az, FDD-compliant thresholds -0.4/0.4/0.4/±3.0)
 - _safe_float() with None, valid numeric strings, and malformed strings
 - _calculate_severity() zero-threshold guard + clamping to 1.0
 - every event handler individually:
@@ -79,6 +94,7 @@ def test_filter_imu_noise_event_detects_harsh_braking():
     check_is("is_harsh_braking", result["is_harsh_braking"], True)
     check_is("is_harsh_acceleration", result["is_harsh_acceleration"], False)
     check_is("is_harsh_cornering", result["is_harsh_cornering"], False)
+    check_is("is_bump", result["is_bump"], False)
 
 
 def test_filter_imu_noise_event_detects_harsh_acceleration():
@@ -103,6 +119,9 @@ def test_filter_imu_noise_event_none_ax_ay_defaults_to_zero():
         "is_harsh_braking": False,
         "is_harsh_acceleration": False,
         "is_harsh_cornering": False,
+        # [FIX #7] is_bump ต้องมีอยู่ใน dict ผลลัพธ์เสมอ — az=1.0 (baseline
+        # แรงโน้มถ่วงปกติ) ไม่เกิน ±3G จึงเป็น False
+        "is_bump": False,
     }
     check("filter_imu_noise_event(None,None,1.0)", result, expected)
 
@@ -110,6 +129,56 @@ def test_filter_imu_noise_event_none_ax_ay_defaults_to_zero():
 def test_filter_imu_noise_event_normal_driving_no_flags():
     result = filter_imu_noise_event(ax=0.1, ay=0.1, az=1.0)
     check("any(result.values())", any(result.values()), False)
+
+
+# ── [FIX #7] เจาะจงช่วงหัวต่อ threshold ที่เปลี่ยนไป (0.3->0.4, 0.5->0.4) ──
+
+def test_filter_imu_noise_event_accel_at_old_threshold_no_longer_triggers():
+    # เดิม threshold=0.3 -> ax=0.35 จะ trigger; ใหม่ threshold=0.4 -> ไม่ trigger
+    # ล็อกพฤติกรรมใหม่ตาม FDD §10.4 (harsh_accel_g default = 0.40)
+    result = filter_imu_noise_event(ax=0.35, ay=0.0, az=1.0)
+    check_is("is_harsh_acceleration(ax=0.35, ตาม FDD ไม่ควร trigger)",
+             result["is_harsh_acceleration"], False)
+
+
+def test_filter_imu_noise_event_accel_just_over_fdd_threshold_triggers():
+    result = filter_imu_noise_event(ax=0.41, ay=0.0, az=1.0)
+    check_is("is_harsh_acceleration(ax=0.41)", result["is_harsh_acceleration"], True)
+
+
+def test_filter_imu_noise_event_corner_between_old_and_new_threshold_now_triggers():
+    # เดิม threshold=0.5 -> ay=0.45 จะไม่ trigger; ใหม่ threshold=0.4 -> ต้อง trigger
+    # ล็อกพฤติกรรมใหม่ตาม FDD §10.4 (harsh_corner_g default = 0.40)
+    result = filter_imu_noise_event(ax=0.0, ay=0.45, az=1.0)
+    check_is("is_harsh_cornering(ay=0.45, ตาม FDD ควร trigger)",
+             result["is_harsh_cornering"], True)
+
+
+def test_filter_imu_noise_event_corner_just_under_fdd_threshold_not_triggered():
+    result = filter_imu_noise_event(ax=0.0, ay=0.39, az=1.0)
+    check_is("is_harsh_cornering(ay=0.39)", result["is_harsh_cornering"], False)
+
+
+# ── [FIX #7] Harsh Bump — เดิมไม่มีเลย ──
+
+def test_filter_imu_noise_event_detects_bump_positive():
+    result = filter_imu_noise_event(ax=0.0, ay=0.0, az=3.5)
+    check_is("is_bump(az=3.5)", result["is_bump"], True)
+
+
+def test_filter_imu_noise_event_detects_bump_negative():
+    result = filter_imu_noise_event(ax=0.0, ay=0.0, az=-3.5)
+    check_is("is_bump(az=-3.5)", result["is_bump"], True)
+
+
+def test_filter_imu_noise_event_bump_boundary_exactly_3g_not_triggered():
+    result = filter_imu_noise_event(ax=0.0, ay=0.0, az=3.0)
+    check_is("is_bump(az=3.0, ขอบเขตพอดี)", result["is_bump"], False)
+
+
+def test_filter_imu_noise_event_az_none_defaults_to_zero_no_bump():
+    result = filter_imu_noise_event(ax=0.0, ay=0.0, az=None)
+    check_is("is_bump(az=None)", result["is_bump"], False)
 
 
 # =================================================================
