@@ -1,10 +1,10 @@
 # app/api/routes_trips.py
 #
-# 🔴 CRITICAL FIX (this revision): Add APIKEY authentication to EVERY
+# 🔴 CRITICAL FIX (previous revision): Add APIKEY authentication to EVERY
 #     endpoint in this file. FDD v1.4 §13 Security requires:
 #         "Authentication: JWT token สำหรับ API, MQTT username/password
 #          per device"
-#     Before this fix, routes_trips.py had ZERO auth on any endpoint —
+#     Before that fix, routes_trips.py had ZERO auth on any endpoint —
 #     anyone could pull all trip logs (driver GPS/behavior data) via
 #     POST /webhook/odoo-sync, or mark trips as synced via
 #     PATCH /trips/{id}/mark-synced without Odoo ever having received
@@ -14,10 +14,29 @@
 #     routes_vehicles.py / routes_drivers.py / routes_reports.py
 #     (APIKeyHeader "APIKEY" + _verify_api_key dependency).
 #
-#     NOTE on scope: mark_trips_synced_batch()'s "marked" count bug
-#     (reports len(request.trip_ids) instead of actual UPDATE rowcount)
-#     is a SEPARATE fix — intentionally NOT touched here to keep this
-#     patch focused on auth only, per the agreed one-fix-at-a-time order.
+# 🔴 CRITICAL FIX (this revision): This file previously had the
+#     `@router.patch("/trips/batch/mark-synced", ...)` route/function
+#     declared TWICE (an accidental copy-paste). FastAPI registers
+#     routes in declaration order and matches top-down, so every
+#     request to /trips/batch/mark-synced was always served by the
+#     FIRST (buggy, older) definition — which reported
+#     `marked = len(trip_ids)` unconditionally instead of the actual
+#     UPDATE rowcount, and had no `requested` field in its response.
+#     The second (correct, parses "UPDATE n" from conn.execute()) copy
+#     was dead code, unreachable.
+#
+#     Worse: because the duplicate consumed the "batch/mark-synced"
+#     block, the single-trip endpoint `PATCH /trips/{trip_id}/mark-synced`
+#     — which the module docstring/comments below still reference —
+#     had been entirely DELETED from this file. Any request to
+#     /trips/{id}/mark-synced fell through to no matching route and
+#     FastAPI/Starlette returned 404.
+#
+#     Fix: removed the duplicate (buggy) batch route entirely, kept
+#     the single correct batch route (parses actual UPDATE rowcount,
+#     includes "requested" in the response), and re-added the missing
+#     single-trip PATCH /trips/{trip_id}/mark-synced endpoint with
+#     idempotent "already_synced" handling.
 
 from datetime import datetime
 from typing import Optional
@@ -285,57 +304,15 @@ async def get_unsynced_trips(
 #
 # ⚠️ ต้องอยู่ก่อน /{trip_id}/mark-synced
 #    เพื่อไม่ให้ "batch" ถูก match เป็น trip_id
-# ─────────────────────────────────────────────────────────────
-
-@router.patch("/trips/batch/mark-synced", status_code=200)
-async def mark_trips_synced_batch(
-    request: BatchMarkSyncedRequest,
-    pool: asyncpg.Pool = Depends(get_db_pool),
-    api_key: str = Security(_verify_api_key),  # [FIX]
-):
-    """
-    Mark หลาย trip ว่า sync แล้วพร้อมกัน (All-or-Nothing transaction)
-
-    **Authentication:** ต้องใส่ APIKEY header (FDD §13) — endpoint นี้
-    ป้องกันไม่ให้ใครก็ mark trip ว่า sync แล้วทั้งที่ Odoo ยังไม่เคยรับจริง
-    ซึ่งจะทำให้ข้อมูล trip หายจากระบบถาวรแบบเงียบ (Odoo cron เช็ค
-    synced_to_odoo=false เท่านั้น จะไม่ pull ซ้ำอีก)
-
-    Request Body: { "trip_ids": [10, 11, 12] }
-
-    หมายเหตุ: response field "marked" ปัจจุบันยังคืนค่า len(trip_ids)
-    ของ input ไม่ใช่จำนวนแถวที่ UPDATE จริง — เป็นบั๊กแยกที่ยังไม่ได้
-    แก้ในรอบนี้ (ตามลำดับ fix ที่ตกลงกันไว้)
-    """
-    if not request.trip_ids:
-        raise HTTPException(status_code=400, detail="trip_ids ว่างเปล่า")
-
-    try:
-        async with pool.acquire() as conn:
-            async with conn.transaction():
-                await conn.execute(
-                    """
-                    UPDATE trip_logs
-                    SET synced_to_odoo = true,
-                        synced_at      = NOW()
-                    WHERE id = ANY($1::bigint[])
-                      AND synced_to_odoo = false
-                    """,
-                    request.trip_ids,
-                )
-
-        return {
-            "status":   "success",
-            "marked":   len(request.trip_ids),
-            "trip_ids": request.trip_ids,
-        }
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-# ─────────────────────────────────────────────────────────────
-# PATCH /api/v1/trips/{trip_id}/mark-synced
+#
+# 🔴 [FIX — this revision] เดิมมี route/function นี้ประกาศซ้ำกัน 2
+#    ครั้งในไฟล์นี้ (accidental copy-paste) — FastAPI จะ match ตัวแรก
+#    (ตัวเก่า/บั๊ก) เสมอเพราะลงทะเบียนตามลำดับบนลงล่าง ทำให้ตัวที่สอง
+#    (ตัวที่แก้ให้ parse UPDATE rowcount จริงแล้ว) กลายเป็น dead code
+#    ไม่เคยถูกเรียกใช้จริงเลย
+#
+#    แก้ไข: เหลือ route นี้ไว้ตัวเดียว — เป็นเวอร์ชันที่ถูกต้อง
+#    (parse ผลลัพธ์จริงจาก conn.execute(), มี "requested" ในผลลัพธ์)
 # ─────────────────────────────────────────────────────────────
 
 @router.patch("/trips/batch/mark-synced", status_code=200)
@@ -389,14 +366,103 @@ async def mark_trips_synced_batch(
             marked_count = 0
 
         return {
-            "status":   "success",
-            "marked":   marked_count,
+            "status":    "success",
+            "marked":    marked_count,
             "requested": len(request.trip_ids),
-            "trip_ids": request.trip_ids,
+            "trip_ids":  request.trip_ids,
         }
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ─────────────────────────────────────────────────────────────
+# PATCH /api/v1/trips/{trip_id}/mark-synced
+#
+# 🔴 [FIX — this revision] endpoint นี้เคยหายไปจากไฟล์ทั้งหมด เพราะ
+#    ถูกเขียนทับด้วย mark_trips_synced_batch() ที่ประกาศซ้ำ (ดู
+#    คำอธิบายด้านบนที่ header ของไฟล์) ทำให้ทุก request ไปที่
+#    /trips/{trip_id}/mark-synced ได้ 404 เสมอ (ไม่มี route ให้ match)
+#
+#    แก้ไข: เพิ่ม endpoint นี้กลับเข้ามา — mark trip เดี่ยวว่า sync
+#    แล้ว, idempotent (เรียกซ้ำกับ trip ที่ sync ไปแล้วไม่ error แต่
+#    คืน status="already_synced" แทน)
+#
+# ⚠️ ต้องอยู่ "หลัง" /trips/batch/mark-synced เพื่อไม่ให้ "batch"
+#    ถูก parse เป็น {trip_id} (FastAPI match แบบ top-down)
+# ─────────────────────────────────────────────────────────────
+
+@router.patch("/trips/{trip_id}/mark-synced", response_model=MarkSyncedResponse)
+async def mark_trip_synced(
+    trip_id: int,
+    body: MarkSyncedRequest = MarkSyncedRequest(),
+    pool: asyncpg.Pool = Depends(get_db_pool),
+    api_key: str = Security(_verify_api_key),
+):
+    """
+    Mark trip เดี่ยวว่า sync ไป Odoo แล้ว
+
+    **Authentication:** ต้องใส่ APIKEY header (FDD §13)
+
+    Request Body (optional):
+        synced_at — เวลาที่ sync สำเร็จ ถ้าไม่ระบุจะใช้เวลาปัจจุบัน
+                    ของ server (UTC)
+
+    **Idempotent:** ถ้า trip นี้ synced_to_odoo=true อยู่แล้ว จะคืน
+    status="already_synced" พร้อมค่า synced_at เดิม แทนที่จะ error
+    หรือ update ซ้ำ
+
+    Errors:
+        404 — ไม่พบ trip_id นี้ในระบบ
+        500 — Database error
+    """
+    try:
+        existing = await pool.fetchrow(
+            "SELECT id, synced_to_odoo, synced_at FROM trip_logs WHERE id = $1",
+            trip_id,
+        )
+
+        if not existing:
+            raise HTTPException(
+                status_code=404,
+                detail=f"ไม่พบ trip id={trip_id} ในระบบ",
+            )
+
+        # ── Idempotent: ถ้า sync ไปแล้ว ไม่ต้อง update ซ้ำ ──────
+        if existing["synced_to_odoo"]:
+            return MarkSyncedResponse(
+                status="already_synced",
+                trip_id=trip_id,
+                synced_to_odoo=True,
+                synced_at=existing["synced_at"],
+            )
+
+        synced_at_value = body.synced_at or datetime.utcnow()
+
+        updated = await pool.fetchrow(
+            """
+            UPDATE trip_logs
+            SET synced_to_odoo = true,
+                synced_at      = $2
+            WHERE id = $1
+            RETURNING id, synced_to_odoo, synced_at
+            """,
+            trip_id,
+            synced_at_value,
+        )
+
+        return MarkSyncedResponse(
+            status="success",
+            trip_id=trip_id,
+            synced_to_odoo=updated["synced_to_odoo"],
+            synced_at=updated["synced_at"],
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 # ─────────────────────────────────────────────────────────────
 # GET /api/v1/trips/{trip_id}
