@@ -1,15 +1,51 @@
 # app/api/routes_trips.py
+#
+# 🔴 CRITICAL FIX (this revision): Add APIKEY authentication to EVERY
+#     endpoint in this file. FDD v1.4 §13 Security requires:
+#         "Authentication: JWT token สำหรับ API, MQTT username/password
+#          per device"
+#     Before this fix, routes_trips.py had ZERO auth on any endpoint —
+#     anyone could pull all trip logs (driver GPS/behavior data) via
+#     POST /webhook/odoo-sync, or mark trips as synced via
+#     PATCH /trips/{id}/mark-synced without Odoo ever having received
+#     them — causing silent permanent data loss (Odoo's cron only pulls
+#     rows where synced_to_odoo=false, so a maliciously/accidentally
+#     marked-synced trip is never retried). Pattern mirrors
+#     routes_vehicles.py / routes_drivers.py / routes_reports.py
+#     (APIKeyHeader "APIKEY" + _verify_api_key dependency).
+#
+#     NOTE on scope: mark_trips_synced_batch()'s "marked" count bug
+#     (reports len(request.trip_ids) instead of actual UPDATE rowcount)
+#     is a SEPARATE fix — intentionally NOT touched here to keep this
+#     patch focused on auth only, per the agreed one-fix-at-a-time order.
 
 from datetime import datetime
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Depends, Query
+from fastapi import APIRouter, HTTPException, Depends, Query, Security
+from fastapi.security import APIKeyHeader
 from pydantic import BaseModel
 import asyncpg
 
 from app.database import get_db_pool
 
 router = APIRouter(prefix="/api/v1", tags=["Trips"])
+
+# ─────────────────────────────────────────────────────────────
+# API Key auth (FIX — FDD §13)
+# ─────────────────────────────────────────────────────────────
+# ใช้ค่าเดียวกับ routes_vehicles.py / routes_drivers.py / routes_reports.py /
+# routes_config.py เพื่อความสอดคล้องกันทั้งระบบในตอนนี้ — งานถัดไปที่ควรทำ
+# (ไม่ใช่ scope ของ fix นี้): แยก scope เฉพาะสำหรับ endpoint ที่ Odoo เรียก
+# โดยใช้ verify_odoo_api_key() ที่มีอยู่แล้วใน app/auth/dependencies.py
+API_KEY = "ktc-fleet-2026-secret"
+api_key_header = APIKeyHeader(name="APIKEY", auto_error=False)
+
+
+async def _verify_api_key(api_key: str = Security(api_key_header)) -> str:
+    if api_key != API_KEY:
+        raise HTTPException(status_code=403, detail="API Key ไม่ถูกต้อง")
+    return api_key
 
 
 # ─────────────────────────────────────────────────────────────
@@ -74,12 +110,17 @@ class OdooSyncWebhookRequest(BaseModel):
 async def odoo_sync_webhook(
     request: OdooSyncWebhookRequest,
     pool: asyncpg.Pool = Depends(get_db_pool),
+    api_key: str = Security(_verify_api_key),  # [FIX]
 ):
     """
     FDD v1.4 §11.3 — Config Sync (Odoo → Backend):
 
         "POST /api/v1/webhook/odoo-sync — Odoo pull trip logs ที่ยังไม่
          sync (batch ≤ 200 records)"
+
+    **Authentication:** ต้องใส่ APIKEY header (FDD §13) — endpoint นี้
+    ส่งข้อมูล GPS/พฤติกรรมพนักงานทั้งหมดออกไป จึงต้องป้องกันไม่ให้ใครก็
+    ดึงออกไปได้
 
     Odoo เรียก endpoint นี้ (ปกติทุก 5 นาที ตาม cron §12.5) พร้อม
     last_sync_timestamp ของรอบก่อนหน้า เพื่อดึง trip_logs ใหม่ที่ยัง
@@ -167,9 +208,12 @@ async def get_unsynced_trips(
     last_id:    Optional[int]      = None,
     limit:      int                = 100,
     pool: asyncpg.Pool = Depends(get_db_pool),
+    api_key: str = Security(_verify_api_key),  # [FIX]
 ):
     """
     ดึงรายการ trip ที่ยังไม่ได้ sync ไป Odoo
+
+    **Authentication:** ต้องใส่ APIKEY header (FDD §13)
 
     Query Parameters:
         vehicle_id : กรองตามรถ (optional)
@@ -247,11 +291,21 @@ async def get_unsynced_trips(
 async def mark_trips_synced_batch(
     request: BatchMarkSyncedRequest,
     pool: asyncpg.Pool = Depends(get_db_pool),
+    api_key: str = Security(_verify_api_key),  # [FIX]
 ):
     """
     Mark หลาย trip ว่า sync แล้วพร้อมกัน (All-or-Nothing transaction)
 
+    **Authentication:** ต้องใส่ APIKEY header (FDD §13) — endpoint นี้
+    ป้องกันไม่ให้ใครก็ mark trip ว่า sync แล้วทั้งที่ Odoo ยังไม่เคยรับจริง
+    ซึ่งจะทำให้ข้อมูล trip หายจากระบบถาวรแบบเงียบ (Odoo cron เช็ค
+    synced_to_odoo=false เท่านั้น จะไม่ pull ซ้ำอีก)
+
     Request Body: { "trip_ids": [10, 11, 12] }
+
+    หมายเหตุ: response field "marked" ปัจจุบันยังคืนค่า len(trip_ids)
+    ของ input ไม่ใช่จำนวนแถวที่ UPDATE จริง — เป็นบั๊กแยกที่ยังไม่ได้
+    แก้ในรอบนี้ (ตามลำดับ fix ที่ตกลงกันไว้)
     """
     if not request.trip_ids:
         raise HTTPException(status_code=400, detail="trip_ids ว่างเปล่า")
@@ -293,10 +347,13 @@ async def mark_trip_synced(
     trip_id: int,
     request: Optional[MarkSyncedRequest] = None,
     pool: asyncpg.Pool = Depends(get_db_pool),
+    api_key: str = Security(_verify_api_key),  # [FIX]
 ):
     """
     Mark trip เดี่ยวว่า sync ไป Odoo แล้ว
     Idempotent: เรียกซ้ำได้ ไม่ error
+
+    **Authentication:** ต้องใส่ APIKEY header (FDD §13)
     """
     try:
         trip = await pool.fetchrow(
@@ -367,9 +424,12 @@ async def get_trip_detail(
         description="true = ส่ง GPS track array มาด้วย (อาจหนักถ้า trip ยาว), false = ส่งแค่ summary",
     ),
     pool: asyncpg.Pool = Depends(get_db_pool),
+    api_key: str = Security(_verify_api_key),  # [FIX]
 ):
     """
     ดึงรายละเอียด trip เดี่ยวตาม trip_id
+
+    **Authentication:** ต้องใส่ APIKEY header (FDD §13)
 
     **Response ประกอบด้วย:**
     - ข้อมูลสรุป trip (ระยะทาง, เวลา, คะแนน, idling)

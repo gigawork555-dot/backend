@@ -5,6 +5,16 @@
 #     แล้วไป bind กับ vehicle ทำให้ lookup_vehicle_id() ใน mqtt_subscriber.py
 #     หา device_id ไม่เจอ (เพราะ ESP32 ส่งมาเป็น "KTC-001" จริง) → vehicle_id=None
 #     → trip/event processing ถูกข้ามทั้งหมด
+# 🔴 CRITICAL FIX #3 (this revision): Add APIKEY authentication to EVERY
+#     endpoint in this file. FDD v1.4 §13 Security requires:
+#         "Authentication: JWT token สำหรับ API, MQTT username/password
+#          per device"
+#     Before this fix, routes_config.py had ZERO auth on any endpoint —
+#     anyone could push a fake scoring config (affects driver bonuses,
+#     FDD §12.4) or rebind device<->vehicle<->driver (corrupts trip
+#     attribution) with no credentials at all. Pattern mirrors
+#     routes_vehicles.py / routes_drivers.py / routes_reports.py
+#     (APIKeyHeader "APIKEY" + _verify_api_key dependency).
 
 """
 Device Configuration & Management Endpoints
@@ -17,7 +27,8 @@ Handles:
 """
 
 import re
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, Security
+from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, field_validator
 import asyncpg
 from typing import List, Optional
@@ -26,6 +37,24 @@ from datetime import datetime
 from app.database import get_db_pool
 
 router = APIRouter(prefix="/api/v1", tags=["Config"])
+
+# ─────────────────────────────────────────────────────────────
+# API Key auth (FIX #3 — FDD §13)
+# ─────────────────────────────────────────────────────────────
+# ใช้ค่าเดียวกับ routes_vehicles.py / routes_drivers.py / routes_reports.py
+# เพื่อความสอดคล้องกันทั้งระบบในตอนนี้ — งานถัดไปที่ควรทำ (ไม่ใช่ scope
+# ของ fix นี้): แยก scope เฉพาะสำหรับ endpoint ที่ Odoo เรียก
+# (PUT /config/vehicle, POST /config/scoring) ออกจาก endpoint ที่ ESP32
+# เรียก โดยใช้ verify_odoo_api_key() ที่มีอยู่แล้วใน app/auth/dependencies.py
+API_KEY = "ktc-fleet-2026-secret"
+api_key_header = APIKeyHeader(name="APIKEY", auto_error=False)
+
+
+async def _verify_api_key(api_key: str = Security(api_key_header)) -> str:
+    if api_key != API_KEY:
+        raise HTTPException(status_code=403, detail="API Key ไม่ถูกต้อง")
+    return api_key
+
 
 # ─────────────────────────────────────────────────────────────
 # Device ID Format Validation
@@ -266,10 +295,15 @@ async def _register_single(
 # ─────────────────────────────────────────────────────────────
 
 @router.get("/devices")
-async def get_devices(pool: asyncpg.Pool = Depends(get_db_pool)):
+async def get_devices(
+    pool: asyncpg.Pool = Depends(get_db_pool),
+    api_key: str = Security(_verify_api_key),  # [FIX #3]
+):
     """
     List all devices
-    
+
+    **Authentication:** ต้องใส่ APIKEY header (FDD §13)
+
     Returns:
         {
             "total": 50,
@@ -310,10 +344,13 @@ async def get_devices(pool: asyncpg.Pool = Depends(get_db_pool)):
 @router.get("/config_device")
 async def get_device_config(
     device_id: str,
-    pool: asyncpg.Pool = Depends(get_db_pool)
+    pool: asyncpg.Pool = Depends(get_db_pool),
+    api_key: str = Security(_verify_api_key),  # [FIX #3]
 ):
     """
     Get current binding status of a device
+
+    **Authentication:** ต้องใส่ APIKEY header (FDD §13)
 
     Query Params:
         device_id: Device ID (e.g., "KTC-001")
@@ -374,10 +411,13 @@ async def get_device_config(
 @router.post("/config_device/register", status_code=201)
 async def register_device_single(
     request: RegisterDeviceRequest,
-    pool: asyncpg.Pool = Depends(get_db_pool)
+    pool: asyncpg.Pool = Depends(get_db_pool),
+    api_key: str = Security(_verify_api_key),  # [FIX #3]
 ):
     """
     Register single device-to-vehicle binding
+
+    **Authentication:** ต้องใส่ APIKEY header (FDD §13)
 
     Request Body:
         {
@@ -416,10 +456,13 @@ async def register_device_single(
 @router.post("/config_device/register/batch", status_code=201)
 async def register_device_batch(
     request: RegisterDeviceBatchRequest,
-    pool: asyncpg.Pool = Depends(get_db_pool)
+    pool: asyncpg.Pool = Depends(get_db_pool),
+    api_key: str = Security(_verify_api_key),  # [FIX #3]
 ):
     """
     Register multiple devices in batch (All-or-Nothing transaction)
+
+    **Authentication:** ต้องใส่ APIKEY header (FDD §13)
 
     Request Body:
         {
@@ -486,10 +529,13 @@ async def register_device_batch(
 @router.put("/config/vehicle")
 async def update_vehicle_config(
     request: VehicleConfigUpdate,
-    pool: asyncpg.Pool = Depends(get_db_pool)
+    pool: asyncpg.Pool = Depends(get_db_pool),
+    api_key: str = Security(_verify_api_key),  # [FIX #3]
 ):
     """
     Odoo เรียกเมื่อผูกหรือเปลี่ยนบอร์ด ESP32 ให้รถ
+
+    **Authentication:** ต้องใส่ APIKEY header (FDD §13)
 
     รองรับ 3 กรณี:
     1. รถยังไม่มีบอร์ด → register ใหม่ทันที (ไม่ throw 404)
@@ -655,11 +701,14 @@ async def update_vehicle_config(
 
 @router.get("/config/scoring/current")
 async def get_current_scoring_config(
-    pool: asyncpg.Pool = Depends(get_db_pool)
+    pool: asyncpg.Pool = Depends(get_db_pool),
+    api_key: str = Security(_verify_api_key),  # [FIX #3]
 ):
     """
     Get currently active scoring configuration
-    
+
+    **Authentication:** ต้องใส่ APIKEY header (FDD §13)
+
     Returns:
         Scoring config with all weights and thresholds
     """
@@ -698,10 +747,15 @@ async def get_current_scoring_config(
 @router.post("/config/scoring", status_code=201)
 async def push_scoring_config(
     request: ScoringConfigRequest,
-    pool: asyncpg.Pool = Depends(get_db_pool)
+    pool: asyncpg.Pool = Depends(get_db_pool),
+    api_key: str = Security(_verify_api_key),  # [FIX #3]
 ):
     """
     Odoo push scoring config ใหม่เข้า cache
+
+    **Authentication:** ต้องใส่ APIKEY header (FDD §13) — endpoint นี้กระทบ
+    การคำนวณโบนัสพนักงานโดยตรง (FDD §12.4) จึงต้องป้องกันไม่ให้ใครก็ได้
+    push config ปลอมเข้ามา
 
     - Deactivate config เก่าทั้งหมดก่อน
     - Insert config ใหม่ พร้อม is_active = true
