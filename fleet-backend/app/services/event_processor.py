@@ -14,7 +14,7 @@
 #     to `threshold == 0`, since harsh_brake threshold is naturally
 #     negative (-0.4G) and the old guard zeroed out its severity always.
 #
-#   [NEW FIX #4 — Harsh Bump added]
+#   [NEW FIX #4 — Harsh Bump added, in the main config-driven pipeline]
 #     FDD §10.4 defines 6 event types: harsh_brake, harsh_acceleration,
 #     harsh_cornering, speeding, harsh_bump, idling.
 #     This file previously only implemented 5 — harsh_bump (az spike)
@@ -29,6 +29,34 @@
 #     *weight* (bump_deduct) is configurable, not the trigger threshold.
 #     So BUMP_THRESHOLD_G below is intentionally a module constant,
 #     with an optional config override left available for testing.
+#
+#   [FIX #7 — this revision] filter_imu_noise_event() thresholds/coverage
+#     corrected to match FDD v1.4 §10.4 exactly.
+#
+#     This function is kept only for backward-compatibility callers
+#     (it is NOT part of EVENT_HANDLERS / process_event() — the real
+#     config-driven pipeline used by mqtt_subscriber.py already used
+#     the correct -0.4/0.4/0.4/±3.0 thresholds via _detect_harsh_*()
+#     and _detect_bump()). Before this fix it independently hardcoded
+#     its own, DIFFERENT, out-of-spec thresholds:
+#
+#         HARSH_ACCEL_THRESHOLD  = 0.3   (FDD §10.4 requires 0.4)
+#         HARSH_CORNER_THRESHOLD = 0.5   (FDD §10.4 requires 0.4)
+#
+#     and never inspected `az` at all — so any caller relying on this
+#     helper had no way to detect Harsh Bump, silently missing 1 of
+#     the 6 FDD-defined event types.
+#
+#     Fixed: thresholds aligned to -0.4 / 0.4 / 0.4 (matching
+#     HARSH_BRAKE_THRESHOLD/_detect_harsh_accel()/_detect_harsh_cornering())
+#     and an `is_bump` key added using the same ±3.0G fixed threshold as
+#     _detect_bump() / BUMP_THRESHOLD_G below, so this helper's output
+#     now exactly matches the FDD-compliant detection pipeline for all
+#     4 IMU-axis event types (brake / accel / corner / bump).
+#
+#     NOTE: this only changes the *out-of-spec legacy helper* — the
+#     production detection pipeline (process_event() -> EVENT_HANDLERS)
+#     was already FDD-compliant and is unaffected by this fix.
 
 from typing import Dict
 
@@ -52,23 +80,30 @@ def filter_imu_noise_event(
     """
     Backward compatibility
 
-    Axis mapping matches FDD v1.4 §10.4:
+    [FIX #7] Axis mapping AND thresholds now match FDD v1.4 §10.4
+    exactly (previously accel/corner thresholds were out of spec, and
+    bump detection was missing entirely):
       - Harsh Brake        : ax < -0.4G
       - Harsh Acceleration : ax > +0.4G
       - Harsh Cornering    : |ay| > 0.4G
+      - Harsh Bump         : az > +3G or az < -3G
     """
 
     HARSH_BRAKE_THRESHOLD = -0.4
-    HARSH_ACCEL_THRESHOLD = 0.3
-    HARSH_CORNER_THRESHOLD = 0.5
+    HARSH_ACCEL_THRESHOLD = 0.4    # [FIX #7] was 0.3 — FDD §10.4 requires 0.4
+    HARSH_CORNER_THRESHOLD = 0.4   # [FIX #7] was 0.5 — FDD §10.4 requires 0.4
 
     ax = ax or 0.0
     ay = ay or 0.0
+    az = az if az is not None else 0.0  # [FIX #7] az previously unused entirely
 
     return {
         "is_harsh_braking": ax < HARSH_BRAKE_THRESHOLD,
         "is_harsh_acceleration": ax > HARSH_ACCEL_THRESHOLD,
-        "is_harsh_cornering": abs(ay) > HARSH_CORNER_THRESHOLD
+        "is_harsh_cornering": abs(ay) > HARSH_CORNER_THRESHOLD,
+        # [FIX #7] new — FDD §10.4 Harsh Bump, using the same fixed
+        # ±3G constant as _detect_bump() below (BUMP_THRESHOLD_G)
+        "is_bump": az > BUMP_THRESHOLD_G or az < -BUMP_THRESHOLD_G,
     }
 
 
