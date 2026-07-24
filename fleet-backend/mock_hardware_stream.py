@@ -7,7 +7,7 @@ import asyncio
 from datetime import datetime, timezone
 from paho.mqtt import client as mqtt_client
 
-MQTT_HOST = "192.168.1.43"
+MQTT_HOST = "192.168.1.37"
 MQTT_PORT = 1884
 MQTT_TOPIC = "kotchasaan/fleet/KTC-001/telemetry"
 HMAC_SECRET = "fleet_hmac_secret_KTC001_2026"
