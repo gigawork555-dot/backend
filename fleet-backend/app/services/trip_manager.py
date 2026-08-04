@@ -248,11 +248,27 @@ def _haversine_km(
 
 # ──────────────────────────────────────────────────────────────
 # Fuel estimation (MAF-based → fallback distance-based)
+#
+# [FIX — fuel_used = 0 bug]
+#   เดิม: duration คำนวณจาก len(telemetry_points) * 5s สมมติว่าทุก
+#   point ห่างกัน 5 วินาทีเป๊ะเสมอ ซึ่งผิดจริงเมื่อจำนวน telemetry
+#   record ต่อ trip น้อย (เช่น trip ยาว 60+ นาทีแต่ raw data เหลือ
+#   แค่ 2-3 จุดจาก sampling/gap) ทำให้ duration ที่ได้เพี้ยนเป็น
+#   เสี้ยววินาที และผลคูณสุดท้ายปัดเหลือ 0.00 เกือบทุกครั้ง
+#
+#   แก้ไข: รับ duration_hours จริง (คำนวณจาก trip_start/trip_end ใน
+#   _finalize_trip() ซึ่งแม่นที่สุด) เป็น parameter — ถ้าไม่ส่งมา
+#   (เรียกแบบเก่า) จะ derive จาก timestamp จริงของ telemetry_points
+#   เป็นชั้นป้องกันที่สอง แทนการเดาจากจำนวนแถว
+#
+#   เพิ่ม precision จาก 2 → 4 ตำแหน่งทศนิยม เพราะ trip ระยะสั้น
+#   (หลักสิบ-ร้อยเมตร) ใช้น้ำมันหลัก mL ปัด 2 ตำแหน่งจะเป็น 0.00 เสมอ
 # ──────────────────────────────────────────────────────────────
 
 def _estimate_fuel(
     telemetry_points: list[dict],
-    distance_km:      float
+    distance_km:      float,
+    duration_hours:   float = 0.0,
 ) -> float:
 
     maf_points = [
@@ -261,13 +277,29 @@ def _estimate_fuel(
         and float(p.get("maf_airflow", 0)) > 0
     ]
 
-    if maf_points:
-        avg_maf  = sum(float(p["maf_airflow"]) for p in maf_points) / len(maf_points)
-        duration = len(telemetry_points) * 5 / 3600.0   # assume 5s per point → hours
-        return round(avg_maf * duration / 14.7 * 0.72 / 1000, 2)
+    # ── หา duration ที่แม่นยำที่สุดเท่าที่มีข้อมูล ──────────────
+    if duration_hours <= 0:
+        # Fallback: derive จาก timestamp จริงของ telemetry_points
+        # (ยังดีกว่าสมมติ 5s/point แน่นอน แม้จะสู้ duration_hours
+        # ที่ส่งมาจาก trip_start/trip_end ตรงๆ ไม่ได้)
+        ts_values = [
+            p["ts"] for p in telemetry_points
+            if isinstance(p.get("ts"), datetime)
+        ]
+        if len(ts_values) >= 2:
+            duration_hours = (
+                max(ts_values) - min(ts_values)
+            ).total_seconds() / 3600.0
+
+    if maf_points and duration_hours > 0:
+        avg_maf = sum(float(p["maf_airflow"]) for p in maf_points) / len(maf_points)
+
+        # fuel(L) = MAF(g/s) × duration(hr→s) / AFR(14.7) × density_factor(0.72) / 1000
+        fuel = avg_maf * duration_hours * 3600.0 / 14.7 * 0.72 / 1000.0
+        return round(fuel, 4)
 
     # fallback: 10L/100km
-    return round(distance_km * 0.10, 2)
+    return round(distance_km * 0.10, 4)
 
 
 # ──────────────────────────────────────────────────────────────
@@ -402,7 +434,10 @@ async def _finalize_trip(
         # its penalty is already folded into driver_score below.
 
         # ── 9. fuel estimate ──────────────────────────────────
-        fuel_used = _estimate_fuel(telemetry_points, distance_km)
+        # [FIX] ส่ง duration_hours จริงจาก trip_start/trip_end (แม่นสุด)
+        # แทนให้ _estimate_fuel() เดาจากจำนวน telemetry rows
+        duration_hours = (end_time - start_time).total_seconds() / 3600.0
+        fuel_used = _estimate_fuel(telemetry_points, distance_km, duration_hours)
 
         # ── 10. GPS track ─────────────────────────────────────
         import json
