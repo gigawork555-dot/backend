@@ -3,6 +3,26 @@
 # FDD v1.4 §10.4 Harsh Event Detection Algorithm — Pure Function
 #
 # [FIX LOG — this revision]
+#
+#   [FIX #9 — this revision] _detect_speeding() severity formula corrected
+#     to match FDD v1.4 §10.4 exactly.
+#
+#     FDD §10.4 table specifies:
+#       Speeding | OBD speed > geofence limit | (speed - limit) / limit × 100
+#
+#     Previous code computed severity as `speed / threshold` (i.e. the raw
+#     speed ratio to the limit), NOT `(speed - threshold) / threshold` (the
+#     ratio of the EXCESS over the limit). This meant severity was already
+#     very high (often clamped to 1.0) the moment speed barely crossed the
+#     threshold, instead of scaling with how far over the limit the driver
+#     actually was — not matching the FDD formula and overstating severity
+#     for borderline speeding events.
+#
+#     Fixed: severity now computed from `speed - threshold` (the excess),
+#     divided by `threshold`, exactly as FDD §10.4 specifies. Detection
+#     condition (`speed > threshold`) is unchanged — only the severity
+#     calculation changed.
+#
 #   [BUG-4 FIX, kept from previous patch]
 #     Axis mapping corrected to match FDD §10.4:
 #       Harsh Brake        : ax < -0.4G
@@ -30,7 +50,7 @@
 #     So BUMP_THRESHOLD_G below is intentionally a module constant,
 #     with an optional config override left available for testing.
 #
-#   [FIX #7 — this revision] filter_imu_noise_event() thresholds/coverage
+#   [FIX #7 — kept from previous patch] filter_imu_noise_event() thresholds/coverage
 #     corrected to match FDD v1.4 §10.4 exactly.
 #
 #     This function is kept only for backward-compatibility callers
@@ -56,7 +76,8 @@
 #
 #     NOTE: this only changes the *out-of-spec legacy helper* — the
 #     production detection pipeline (process_event() -> EVENT_HANDLERS)
-#     was already FDD-compliant and is unaffected by this fix.
+#     was already FDD-compliant (aside from Fix #9 above) and is
+#     otherwise unaffected by this fix.
 
 from typing import Dict
 
@@ -253,6 +274,19 @@ def _detect_speeding(
         payload: dict,
         config: dict
 ):
+    """
+    FDD v1.4 §10.4: Speeding — OBD speed > geofence limit
+
+    [FIX #9 — this revision] severity ต้องคำนวณจาก "ส่วนเกิน" ของ
+    speed เหนือ limit (speed - limit) หารด้วย limit ตามสูตรใน FDD:
+
+        Severity = (speed - limit) / limit × 100
+
+    เดิมคำนวณ speed / threshold ตรงๆ (ไม่ลบ limit ออกก่อน) ทำให้
+    severity สูงเกินจริงตั้งแต่แตะ threshold นิดเดียว ไม่ scale ตาม
+    ระดับความเร็วเกินจริงตามที่ FDD ต้องการ — เงื่อนไข trigger
+    (speed > threshold) ไม่เปลี่ยน มีผลแค่ตัวเลข severity เท่านั้น
+    """
 
     speed = _safe_float(
         payload.get("speed")
@@ -267,8 +301,10 @@ def _detect_speeding(
 
     if speed > threshold:
 
+        # [FIX #9] FDD §10.4: severity = (speed - limit) / limit × 100
+        # ใช้ส่วนเกินจาก limit แทน speed ดิบ
         severity = _calculate_severity(
-            speed,
+            speed - threshold,
             threshold
         )
 
