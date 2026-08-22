@@ -1,52 +1,16 @@
-# app/api/routes_drivers.py
-# FDD v1.4 Compliant — Fixed Version
-#
-# Changes vs previous version:
-#
-#   [FIX-1] /bonus — ลบ hardcode 85.0 และ 50 THB ออก
-#           → อ่าน tier boundary จาก scoring_config_cache (FDD §12.3)
-#           → ลบ accumulated_incentive_bonus (Backend ไม่รู้ base_salary)
-#           → Odoo คำนวณ bonus_amount = bonus_pct × hr.contract.wage เอง
-#
-#   [FIX-2] /bonus — รับ tier threshold เป็น query param
-#           → Odoo ส่งค่า tier_a_min/tier_b_min/tier_c_min มาได้
-#           → ถ้าไม่ส่งใช้ค่า FDD §12.3 default (90/75/60)
-#
-#   [FIX-3] /score — bonus_pct ใช้ Tier C = 0% ตาม FDD §12.3
-#           → เดิม Tier C = 2% (ไม่ตรง FDD, FDD บอก C = 0% ไม่มีโบนัส)
-#
-#   [FIX-4] /events — เพิ่ม pagination (page/limit) และ event_type filter
-#           → FDD §12.6 Event History ควร filter ได้ตาม type/วันที่
-#
-#   [FIX-5] ทุก endpoint — เพิ่ม APIKEY authentication
-#           → FDD §13 Security: REST API ต้องมี authentication
-#
-#   [FIX-6] /bonus — ดึง synced trip ด้วย ไม่ใช่แค่ unsynced
-#           → FDD §12.4 avg_score คำนวณจาก trip ทั้งหมดในรอบ
-
 from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query, Security
-from fastapi.security import APIKeyHeader
 import asyncpg
 
 from app.config import settings
+from app.auth.dependencies import verify_api_key
 
 router = APIRouter(
     prefix="/api/v1/drivers",
     tags=["Drivers & Incentive Rewards"],
 )
-
-# ── API Key auth (เหมือน routes_vehicles.py) ──────────────────
-API_KEY = "ktc-fleet-2026-secret"
-api_key_header = APIKeyHeader(name="APIKEY", auto_error=False)
-
-
-async def _verify_api_key(api_key: str = Security(api_key_header)) -> str:
-    if api_key != API_KEY:
-        raise HTTPException(status_code=403, detail="API Key ไม่ถูกต้อง")
-    return api_key
 
 
 async def _get_db() -> asyncpg.Connection:
@@ -63,13 +27,7 @@ def _parse_driver_id(driver_id: str) -> int:
     return int(driver_id) if driver_id.isdigit() else 0
 
 
-# ── Helper: ดึง active scoring config ──────────────────────────
-
 async def _get_active_config(conn: asyncpg.Connection) -> dict:
-    """
-    ดึง scoring config ที่ active อยู่จาก scoring_config_cache
-    FDD §12.3: tier boundary และ score_base อ่านจาก config
-    """
     row = await conn.fetchrow(
         """
         SELECT
@@ -90,7 +48,6 @@ async def _get_active_config(conn: asyncpg.Connection) -> dict:
     if row:
         return dict(row)
 
-    # Fallback: FDD §12.3 default values
     return {
         "score_base":           100.0,
         "harsh_brake_deduct":     5.0,
@@ -109,39 +66,18 @@ def _calc_tier(
     tier_b_min: float,
     tier_c_min: float,
 ) -> tuple[str, float]:
-    """
-    คำนวณ Tier และ bonus_pct ตาม FDD §12.3 Tier Table
-    Tier A = 10%, B = 5%, C = 0%, D = 0%
-    """
     if avg_score >= tier_a_min:
         return "A", 10.0
     if avg_score >= tier_b_min:
         return "B", 5.0
     if avg_score >= tier_c_min:
-        return "C", 0.0   # [FIX-3] FDD บอก C = 0% ไม่ใช่ 2%
+        return "C", 0.0
     return "D", 0.0
 
-
-# ================================================================
-# GET /api/v1/drivers/{driver_id}/bonus
-#
-# FDD §12.4 — Incentive & Bonus System
-#
-# [FIX-1] ลบ hardcode 50 THB / 85.0 ออก
-# [FIX-2] tier boundary รับจาก query param หรืออ่านจาก config
-#
-# Response สรุปสิ่งที่ Odoo ต้องรู้:
-#   - trips_in_period: ทริปทั้งหมดในรอบ
-#   - avg_score: คะแนนเฉลี่ย
-#   - incentive_tier: A/B/C/D
-#   - bonus_pct: % ที่ได้ตาม tier
-#   - NOTE: bonus_amount = bonus_pct × hr.contract.wage คำนวณใน Odoo
-# ================================================================
 
 @router.get("/{driver_id}/bonus")
 async def get_driver_bonus_summary(
     driver_id: str,
-    # FDD §12.4: ระบุ period ที่ต้องการ
     month: int = Query(
         default=0,
         description="เดือน 1-12 (0 = เดือนปัจจุบัน)"
@@ -150,7 +86,6 @@ async def get_driver_bonus_summary(
         default=0,
         description="ปี เช่น 2568 (0 = ปีปัจจุบัน)"
     ),
-    # [FIX-2] Odoo ส่ง tier boundary มาได้ ถ้าไม่ส่งใช้ FDD default
     tier_a_min: float = Query(
         default=90.0,
         description="FDD §12.3 Tier A ขั้นต่ำ (default 90)"
@@ -163,22 +98,10 @@ async def get_driver_bonus_summary(
         default=60.0,
         description="FDD §12.3 Tier C ขั้นต่ำ (default 60)"
     ),
-    api_key: str = Security(_verify_api_key),  # [FIX-5]
+    api_key: dict = Security(verify_api_key),
 ):
-    """
-    สรุปข้อมูล Incentive ของพนักงานรายเดือน
-
-    **FDD §12.4 Incentive Workflow:**
-    - คำนวณ avg_score จาก trip ทั้งหมดในรอบ
-    - ระบุ Tier A/B/C/D ตาม §12.3 Tier Table
-    - คืน bonus_pct ให้ Odoo นำไปคำนวณ bonus_amount = bonus_pct × hr.contract.wage
-
-    **หมายเหตุ:** Backend ไม่คำนวณ bonus_amount เพราะไม่มีข้อมูล hr.contract
-    Odoo เป็นผู้คำนวณ bonus_amount จาก hr.contract.wage
-    """
     did = _parse_driver_id(driver_id)
 
-    # กำหนด period
     now = datetime.now(timezone.utc)
     target_month = month if 1 <= month <= 12 else now.month
     target_year  = year  if year  > 2000     else now.year
@@ -186,9 +109,6 @@ async def get_driver_bonus_summary(
     try:
         conn = await get_db_connection()
 
-        # ── ดึง trips ของเดือน/ปีที่ต้องการ ────────────────────
-        # [FIX-6] ดึงทุก trip (รวม synced) ไม่ใช่แค่ unsynced
-        # เพราะ FDD §12.4 avg_score มาจาก trip ทั้งหมดในรอบ
         rows = await conn.fetch(
             """
             SELECT
@@ -212,7 +132,6 @@ async def get_driver_bonus_summary(
             target_year,
         )
 
-        # ── ดึง active config สำหรับ snapshot ───────────────────
         config = await _get_active_config(conn)
         await conn.close()
 
@@ -286,17 +205,9 @@ async def get_driver_bonus_summary(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# alias ยังคงไว้สำหรับ backward compat กับ Odoo ที่เรียก /bonus เดิม
 async def get_db_connection() -> asyncpg.Connection:
     return await _get_db()
 
-
-# ================================================================
-# GET /api/v1/drivers/{driver_id}/score
-#
-# [FIX-3] Tier C → bonus_pct = 0% ตาม FDD §12.3
-# [FIX-5] เพิ่ม auth
-# ================================================================
 
 @router.get("/{driver_id}/score")
 async def get_driver_score(
@@ -304,17 +215,8 @@ async def get_driver_score(
     tier_a_min: float = Query(default=90.0),
     tier_b_min: float = Query(default=75.0),
     tier_c_min: float = Query(default=60.0),
-    api_key: str = Security(_verify_api_key),  # [FIX-5]
+    api_key: dict = Security(verify_api_key),
 ):
-    """
-    ดึงคะแนนเฉลี่ยและ trend รายเดือน 6 เดือนล่าสุดของพนักงาน
-
-    Incentive Tier คำนวณตาม FDD §12.3:
-    - A ≥ tier_a_min (default 90) → 10%
-    - B ≥ tier_b_min (default 75) →  5%
-    - C ≥ tier_c_min (default 60) →  0%
-    - D < tier_c_min              →  0% + แจ้งเตือน HR
-    """
     did = _parse_driver_id(driver_id)
 
     try:
@@ -364,12 +266,9 @@ async def get_driver_score(
         )
 
         await conn.close()
-        # summary อาจเป็น None ถ้าพนักงานไม่มี trip เลยในเงื่อนไข query
-        # (WHERE driver_id = $1 AND trip_end IS NOT NULL อาจไม่ match แถวใด)
         avg = float((summary["avg_score"] if summary else 0) or 0)
         tier, bonus_pct = _calc_tier(avg, tier_a_min, tier_b_min, tier_c_min)
-        
-        # FDD §12.3: Tier D → แจ้งเตือน HR
+
         hr_alert = tier == "D"
 
         return {
@@ -390,41 +289,25 @@ async def get_driver_score(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# ================================================================
-# GET /api/v1/drivers/{driver_id}/events
-#
-# [FIX-4] เพิ่ม pagination, event_type filter, date range filter
-#         FDD §12.6 Event History: กรองตาม type/วันที่
-# [FIX-5] เพิ่ม auth
-# ================================================================
-
 @router.get("/{driver_id}/events")
 async def get_driver_events(
     driver_id:  str,
-    # [FIX-4] Pagination
     page:       int           = Query(default=1, ge=1),
     limit:      int           = Query(default=50, ge=1, le=500),
-    # [FIX-4] Filters ตาม FDD §12.6
     event_type: Optional[str] = Query(
         default=None,
         description="กรองตาม event type: harsh_brake|harsh_acceleration|harsh_cornering|speeding|idling"
     ),
     date_from:  Optional[datetime] = Query(default=None),
     date_to:    Optional[datetime] = Query(default=None),
-    api_key: str = Security(_verify_api_key),  # [FIX-5]
+    api_key: dict = Security(verify_api_key),
 ):
-    """
-    ดึงประวัติ harsh event ของพนักงาน — FDD §12.6 Event History
-
-    รองรับ filter ตาม event type และช่วงวันที่
-    """
     did = _parse_driver_id(driver_id)
     offset = (page - 1) * limit
 
     try:
         conn = await get_db_connection()
 
-        # หา device_id ทุกตัวที่พนักงานคนนี้เคยขับ
         trips = await conn.fetch(
             "SELECT DISTINCT device_id FROM trip_logs WHERE driver_id = $1",
             did,
@@ -435,7 +318,6 @@ async def get_driver_events(
             await conn.close()
             return {"driver_id": driver_id, "events": [], "total": 0, "page": page}
 
-        # ── สร้าง WHERE แบบ dynamic ────────────────────────────
         where_parts = [
             "device_id = ANY($1::text[])",
             "event IS NOT NULL",
@@ -457,7 +339,6 @@ async def get_driver_events(
 
         where_sql = " AND ".join(where_parts)
 
-        # นับทั้งหมด
         total = await conn.fetchval(
             f"SELECT COUNT(*) FROM telemetry_raw WHERE {where_sql}",
             *params,
@@ -498,21 +379,13 @@ async def get_driver_events(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# ================================================================
-# GET /api/v1/drivers/{driver_id}/fuel-summary
-# [FIX-5] เพิ่ม auth
-# ================================================================
-
 @router.get("/{driver_id}/fuel-summary")
 async def get_driver_fuel_summary(
     driver_id: str,
     months: int = Query(default=1, ge=1, le=12,
                         description="ย้อนหลัง N เดือน (default 1 = เดือนปัจจุบัน)"),
-    api_key: str = Security(_verify_api_key),  # [FIX-5]
+    api_key: dict = Security(verify_api_key),
 ):
-    """
-    สรุปการใช้เชื้อเพลิงและ idling time — FDD §2.1 Energy Efficiency
-    """
     did = _parse_driver_id(driver_id)
 
     try:
@@ -533,7 +406,6 @@ async def get_driver_fuel_summary(
                         ELSE 0
                     END::numeric, 2
                 )                                                AS avg_fuel_per_100km,
-                -- FDD §2.1: idling cost estimate (ประมาณ 0.8 ลิตร/ชั่วโมง)
                 ROUND(
                     (SUM(idle_min) / 60.0 * 0.8)::numeric, 2
                 )                                                AS estimated_idle_fuel_cost_liters

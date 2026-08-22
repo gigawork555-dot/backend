@@ -1,12 +1,15 @@
 from fastapi import APIRouter, HTTPException, Depends
 from fastapi.security import OAuth2PasswordRequestForm
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, Any
 import asyncpg
 
 from app.auth.models import (
     get_user_by_username,
     update_last_login,
+    create_api_key,
+    list_api_keys,
+    revoke_api_key,
 )
 from app.auth.dependencies import (
     verify_password,
@@ -23,10 +26,6 @@ router = APIRouter(
 )
 
 
-# ==================================================
-# RESPONSE MODELS
-# ==================================================
-
 class LoginResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
@@ -41,18 +40,16 @@ class RegisterRequest(BaseModel):
     role: str = "viewer"
 
 
-# ==================================================
-# LOGIN
-#
-# [FIX] เดิมเรียก `pool = await get_db_pool()` ตรงๆ ในตัวฟังก์ชัน
-# ทำให้ FastAPI `app.dependency_overrides[get_db_pool]` ที่ใช้ใน
-# เทสต์ไม่มีผล (override ใช้ได้เฉพาะ dependency ที่ประกาศผ่าน
-# Depends() ในลายเซ็นของ endpoint เท่านั้น) เปลี่ยนมาใช้
-# `pool: asyncpg.Pool = Depends(get_db_pool)` แทน เพื่อให้
-# testable ตามมาตรฐาน FastAPI (เหมือน routes_trips.py,
-# routes_config.py ที่ทำถูกอยู่แล้ว) — ไม่กระทบ business logic
-# หรือสเปคใดๆ ใน FDD v1.4
-# ==================================================
+class CreateApiKeyRequest(BaseModel):
+    name: str
+
+
+class ApiKeyResponse(BaseModel):
+    id: int
+    name: str
+    api_key: str
+    created_at: Any
+
 
 @router.post(
     "/login",
@@ -115,10 +112,6 @@ async def login(
         )
 
 
-# ==================================================
-# CURRENT USER
-# ==================================================
-
 @router.get(
     "/me",
     summary="ดูข้อมูลผู้ใช้ปัจจุบัน"
@@ -130,13 +123,6 @@ async def get_me(
 ):
     return current_user
 
-
-# ==================================================
-# REGISTER USER
-#
-# [FIX] เดิมเรียก `pool = await get_db_pool()` ตรงๆ เช่นเดียวกับ
-# /login — เปลี่ยนเป็น Depends(get_db_pool) ด้วยเหตุผลเดียวกัน
-# ==================================================
 
 @router.post(
     "/register",
@@ -201,3 +187,53 @@ async def register_user(
             "message": "สร้าง user สำเร็จ",
             "user": dict(row)
         }
+
+
+@router.post(
+    "/api-keys",
+    response_model=ApiKeyResponse,
+    summary="สร้าง API Key ใหม่ (Admin เท่านั้น)",
+)
+async def create_new_api_key(
+    body: CreateApiKeyRequest,
+    current_user: dict = Depends(require_admin),
+    pool: asyncpg.Pool = Depends(get_db_pool),
+):
+    async with pool.acquire() as conn:
+        row = await create_api_key(conn, body.name)
+
+    return ApiKeyResponse(
+        id=row["id"],
+        name=row["name"],
+        api_key=row["key_hash"],
+        created_at=row["created_at"],
+    )
+
+
+@router.get(
+    "/api-keys",
+    summary="ดูรายการ API Key ทั้งหมด (Admin)",
+)
+async def list_all_api_keys(
+    current_user: dict = Depends(require_admin),
+    pool: asyncpg.Pool = Depends(get_db_pool),
+):
+    async with pool.acquire() as conn:
+        keys = await list_api_keys(conn)
+    return {"total": len(keys), "keys": keys}
+
+
+@router.delete(
+    "/api-keys/{key_id}",
+    summary="เพิกถอน API Key (Admin)",
+)
+async def revoke_existing_api_key(
+    key_id: int,
+    current_user: dict = Depends(require_admin),
+    pool: asyncpg.Pool = Depends(get_db_pool),
+):
+    async with pool.acquire() as conn:
+        ok = await revoke_api_key(conn, key_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="ไม่พบ API Key นี้")
+    return {"status": "revoked", "key_id": key_id}

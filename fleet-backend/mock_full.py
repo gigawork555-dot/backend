@@ -41,7 +41,7 @@ from paho.mqtt import client as mqtt_client
 # =====================================================
 # Connection Config — ปรับให้ตรงกับ environment จริง
 # =====================================================
-MQTT_HOST = "192.168.1.37"
+MQTT_HOST = "192.168.1.55"
 MQTT_PORT = 1884
 HMAC_SECRET = "fleet_hmac_secret_KTC001_2026"
 

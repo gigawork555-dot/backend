@@ -1,9 +1,7 @@
-# app/api/routes_vehicles.py
 from datetime import datetime
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Security, Query, Depends
-from fastapi.security import APIKeyHeader
 from fastapi.responses import StreamingResponse
 import asyncpg
 import asyncio
@@ -11,6 +9,7 @@ import json
 import logging
 from app.config import settings
 from app.database import get_db_pool
+from app.auth.dependencies import verify_api_key
 from app.cache import (
     cache_fleet_live_snapshot,
     get_cached_fleet_live_snapshot,
@@ -19,15 +18,6 @@ from app.cache import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/vehicles", tags=["Vehicle Monitoring"])
-
-API_KEY = "ktc-fleet-2026-secret"
-api_key_header = APIKeyHeader(name="APIKEY", auto_error=False)
-
-
-async def verify_api_key(api_key: str = Security(api_key_header)):
-    if api_key != API_KEY:
-        raise HTTPException(status_code=403, detail="API Key ไม่ถูกต้อง")
-    return api_key
 
 
 async def get_db_connection():
@@ -40,12 +30,8 @@ async def get_db_connection():
         raise HTTPException(status_code=500, detail=f"เชื่อมต่อฐานข้อมูลล้มเหลว: {str(e)}")
 
 
-# ============================================================
-# GET /api/v1/vehicles — รายการรถทั้งหมด
-# ============================================================
 @router.get("", summary="ดูรายการรถทั้งหมดพร้อมสถานะและตำแหน่ง")
-async def get_all_vehicles(api_key: str = Security(verify_api_key)):
-    """ดึงรายการรถทั้งหมดพร้อม device ที่ผูกอยู่และ telemetry ล่าสุด"""
+async def get_all_vehicles(api_key: dict = Security(verify_api_key)):
     conn = await get_db_connection()
     try:
         rows = await conn.fetch("""
@@ -73,33 +59,14 @@ async def get_all_vehicles(api_key: str = Security(verify_api_key)):
         await conn.close()
 
 
-# ============================================================
-# [API เส้นที่ 1] GET /api/v1/vehicles/{vehicle_id}/device
-# ข้อมูล device ที่ผูกกับรถ + สถานะ Odoo sync
-# ============================================================
 @router.get(
     "/{vehicle_id}/device",
     summary="[Odoo/หน้าบ้าน] ดูข้อมูล device ที่ผูกกับรถ + วันที่อัปเดตล่าสุด",
 )
 async def get_vehicle_device(
     vehicle_id: int,
-    api_key: str = Security(verify_api_key),
+    api_key: dict = Security(verify_api_key),
 ):
-    """
-    API เส้นที่ 1 — ข้อมูลความสัมพันธ์ รถ ↔ บอร์ด
-
-    ใช้สำหรับ:
-    - Odoo ตรวจสอบว่า vehicle_id ผูกกับบอร์ดใดอยู่
-    - หน้าบ้านแสดงสถานะบอร์ดของรถ
-    - ESP32 ตรวจสอบว่าตัวเองผูกกับรถคันไหน
-
-    Response:
-    - vehicle_id: รหัสรถ
-    - device_id: รหัสบอร์ด ESP32
-    - active: บอร์ดเปิดใช้งานอยู่หรือไม่
-    - date_update_latest: วันที่ Odoo อัปเดตล่าสุด
-    - has_telemetry: มีข้อมูลจากบอร์ดนี้หรือไม่
-    """
     conn = await get_db_connection()
     try:
         row = await conn.fetchrow("""
@@ -147,39 +114,16 @@ async def get_vehicle_device(
         await conn.close()
 
 
-# ============================================================
-# [API เส้นที่ 2] GET /api/v1/vehicles/{vehicle_id}/location
-# Location ล่าสุดของรถ
-# ============================================================
 @router.get(
     "/{vehicle_id}/location",
     summary="[Odoo/หน้าบ้าน] ดู location ล่าสุดของรถ",
 )
 async def get_vehicle_location(
     vehicle_id: int,
-    api_key: str = Security(verify_api_key),
+    api_key: dict = Security(verify_api_key),
 ):
-    """
-    API เส้นที่ 2 — ตำแหน่ง GPS ล่าสุดของรถ
-
-    ใช้สำหรับ:
-    - หน้าบ้านแสดงตำแหน่งรถบนแผนที่
-    - Odoo ดูสถานะรถ (ignition, speed, position)
-
-    Flow: vehicle_id → ค้นหา active device → ดึง telemetry ล่าสุด
-
-    Response:
-    - vehicle_id, device_id
-    - ts: เวลาข้อมูลล่าสุด
-    - lat, lon: พิกัด GPS
-    - speed: ความเร็ว (km/h)
-    - heading: ทิศทาง (องศา)
-    - ignition: สถานะกุญแจ
-    - event: เหตุการณ์ล่าสุด (harsh_brake, speeding ฯลฯ)
-    """
     conn = await get_db_connection()
     try:
-        # ค้นหา active device ที่ผูกกับรถคันนี้
         device = await conn.fetchrow(
             "SELECT id FROM devices WHERE vehicle_id = $1 AND active = true LIMIT 1",
             vehicle_id
@@ -192,7 +136,6 @@ async def get_vehicle_location(
             )
         device_id = device["id"]
 
-        # ดึง telemetry ล่าสุด
         row = await conn.fetchrow("""
             SELECT ts, lat, lon, speed, heading, ignition, event
             FROM telemetry_raw
@@ -232,9 +175,6 @@ async def get_vehicle_location(
         await conn.close()
 
 
-# ============================================================
-# GET /api/v1/vehicles/{vehicle_id}/trips — ประวัติ trip
-# ============================================================
 @router.get(
     "/{vehicle_id}/trips",
     summary="ดูประวัติ trip ของรถตาม vehicle_id พร้อม pagination และ filter",
@@ -264,30 +204,11 @@ async def get_vehicle_trips(
         default=False,
         description="true = เฉพาะ trip ที่ sync ไป Odoo แล้ว, false = ทั้งหมด",
     ),
-    api_key: str = Security(verify_api_key),
+    api_key: dict = Security(verify_api_key),
 ):
-    """
-    ดึงประวัติ trip ของรถคันนี้ พร้อม pagination และ filter
-
-    **Path Parameter:**
-    - `vehicle_id` — รหัสรถ (integer) เช่น 1
-
-    **Query Parameters:**
-    - `page` — หน้าที่ต้องการ (default 1)
-    - `limit` — จำนวน trip ต่อหน้า (default 20, สูงสุด 200)
-    - `date_from` — กรองเฉพาะ trip ที่เริ่มหลังวันนี้ (ISO 8601)
-    - `date_to` — กรองเฉพาะ trip ที่เริ่มก่อนวันนี้ (ISO 8601)
-    - `synced_only` — true = เฉพาะที่ sync Odoo แล้ว
-
-    **Response:**
-    - `total` — จำนวน trip ทั้งหมดที่ตรงเงื่อนไข
-    - `page`, `limit`, `total_pages` — ข้อมูล pagination
-    - `trips` — รายการ trip ในหน้านี้
-    """
     try:
         conn = await get_db_connection()
 
-        # ── สร้าง WHERE clause แบบ dynamic ──────────────────────
         where_clauses = ["vehicle_id = $1"]
         params: list = [vehicle_id]
 
@@ -304,17 +225,14 @@ async def get_vehicle_trips(
 
         where_sql = " AND ".join(where_clauses)
 
-        # ── นับจำนวนทั้งหมดสำหรับ pagination ───────────────────
         total: int = await conn.fetchval(
             f"SELECT COUNT(*) FROM trip_logs WHERE {where_sql}",
             *params,
         )
 
-        # ── คำนวณ offset ────────────────────────────────────────
         offset = (page - 1) * limit
-        total_pages = max(1, -(-total // limit))  # ceiling division
+        total_pages = max(1, -(-total // limit))
 
-        # ── ดึงข้อมูลหน้านี้ ─────────────────────────────────────
         params_with_pagination = params + [limit, offset]
         limit_param  = len(params_with_pagination) - 1
         offset_param = len(params_with_pagination)
@@ -361,50 +279,10 @@ async def get_vehicle_trips(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# ============================================================
-# GET /api/v1/fleet/live — SSE real-time
-#
-# [FIX — สอดคล้อง FDD §11.1 + §13 Availability]
-#
-# ปัญหาเดิม:
-#   - ทุกรอบ loop (ทุก 5 วินาที) เปิด asyncpg.connect() ใหม่ตรงๆ
-#     แทนที่จะใช้ shared pool ที่ FDD §11.1 กำหนดไว้ว่า Database
-#     (TimescaleDB) เป็นทรัพยากรกลางที่ทุก service ใช้ร่วมกัน
-#   - ไม่มีการจัดการ asyncio.CancelledError เมื่อ client ตัดการ
-#     เชื่อมต่อ (ปิดแท็บ / ปิด SSE stream) ทำให้ generator relies
-#     เฉพาะ garbage collection แทนที่จะ cleanup ทันที เสี่ยง
-#     connection leak เมื่อรันจริงระยะยาว กระทบ §13 "uptime ≥ 99.5%"
-#   - ทำให้เทสต์ที่เปิด/ปิด stream อย่างรวดเร็ว (เช่น TestClient
-#     .stream() context manager) ค้างนาน เพราะ event loop ยังพยายาม
-#     เปิด DB connection ใหม่และรอ asyncio.sleep(5) อยู่เบื้องหลัง
-#     แม้ context manager ฝั่งเทสต์จะออกจาก `with` ไปแล้ว
-#
-# แก้ไข:
-#   1. ใช้ pool กลางจาก app.database.get_db_pool() แทน asyncpg.connect()
-#      ใหม่ทุกรอบ — ลด overhead การเปิด/ปิด connection ทุก 5 วิ
-#   2. ครอบ loop ด้วย try/except asyncio.CancelledError เพื่อ cleanup
-#      ทันทีเมื่อ client ตัดการเชื่อมต่อ แทนที่จะปล่อยให้ loop วนต่อ
-#
-# [NEW — prompt #8, FDD §11.1 Cache layer]
-#   3. ก่อน query telemetry_raw ทุกรอบ เช็ค Redis cache
-#      (get_cached_fleet_live_snapshot()) ก่อนเสมอ — ถ้า hit ใช้
-#      ผลจาก cache ได้เลย ไม่ต้อง query DB ซ้ำ ถ้า miss ค่อย query
-#      DB แล้ว cache_fleet_live_snapshot() เก็บผลไว้ (TTL 3 วินาที)
-#      เพื่อดูดซับ concurrent SSE client หลายคนที่ยิง endpoint นี้
-#      พร้อมกัน ไม่ให้แต่ละคน query TimescaleDB ซ้ำทุก 5 วินาทีเอง
-#   4. ทุกจุดที่เรียก Redis ครอบ try/except แยกจาก DB query เสมอ —
-#      ถ้า Redis ล่ม ต้อง fallback ไป query DB ตรงได้เหมือนเดิม
-#      ทันที (cache เป็น optional layer ห้ามทำให้ SSE endpoint พัง)
-# ============================================================
 fleet_router = APIRouter(prefix="/api/v1/fleet", tags=["Fleet Live"])
 
 
 async def _fetch_fleet_live_rows(pool: asyncpg.Pool) -> list:
-    """
-    ดึงข้อมูลตำแหน่งรถทุกคันล่าสุดจาก DB ตรงๆ (ไม่ผ่าน cache)
-    แยกออกมาเป็นฟังก์ชันย่อยเพื่อให้เรียกซ้ำได้ทั้งจาก cache-miss
-    path และ Redis-down fallback path โดยไม่ duplicate SQL
-    """
     rows = await pool.fetch("""
         SELECT us.vehicle_id, us.device_id,
                t.lat, t.lon, t.speed, t.ignition, t.ts
@@ -420,14 +298,6 @@ async def _fetch_fleet_live_rows(pool: asyncpg.Pool) -> list:
 
 
 async def _get_fleet_live_data(pool: asyncpg.Pool) -> list:
-    """
-    ดึงข้อมูล fleet-live โดยเช็ค Redis cache ก่อนเสมอ (cache-aside
-    pattern) — miss หรือ Redis ล่ม → fallback query DB ตรง
-
-    การ cache/ดึง cache ทั้งสองทางครอบ try/except แยกจากส่วน query
-    DB โดยเจตนา: ถ้า Redis ปัญหา ต้องยังคง query + คืนข้อมูลจาก DB
-    ได้ตามปกติเสมอ (ไม่ raise ออกไปจาก endpoint)
-    """
     cached = None
     try:
         cached = await get_cached_fleet_live_snapshot()
@@ -452,40 +322,13 @@ async def _get_fleet_live_data(pool: asyncpg.Pool) -> list:
 
 @fleet_router.get("/live", summary="SSE real-time ตำแหน่งรถทุกคัน ส่งทุก 5 วินาที")
 async def fleet_live(
-    # [FIX] เปลี่ยนจาก Security(api_key_header) → Security(verify_api_key)
-    #
-    # สาเหตุที่ต้องแก้: FastAPI resolve ทุก Depends/Security parameter
-    # "ตามลำดับที่ประกาศในลายเซ็นฟังก์ชัน" ก่อนจะรันบอดี้ฟังก์ชันเสมอ
-    # ของเดิม api_key_header แค่ "อ่านค่า header" แต่ไม่ raise เอง
-    # ทำให้ FastAPI resolve พารามิเตอร์ถัดไปคือ pool = Depends(get_db_pool)
-    # ต่อทันที ทั้งที่ API key ยังไม่ถูกตรวจสอบเลย
-    #
-    # ถ้าตอนเทสต์ (หรือ production ตอน pool ยังไม่ init) ไม่ได้ override
-    # get_db_pool ไว้ → get_db_pool() จริงจะ raise RuntimeError
-    # ("Database pool is not initialized") ซึ่งเป็น exception ที่ไม่ถูกจับ
-    # หลุดออกมาแทนที่จะได้ 403 ตามที่ควรเป็น → เทสต์ที่ยิง request แบบ
-    # ไม่มี header เลย (test_fleet_live_rejects_missing_key) จึง FAILED
-    # ด้วย unhandled exception แทนที่จะได้ 403
-    #
-    # verify_api_key() (ประกาศไว้ในไฟล์นี้แล้ว ใช้ร่วมกับ endpoint อื่น)
-    # raise HTTPException(403) ที่ "ระดับ dependency" ก่อน pool จะถูก
-    # resolve เลย — dependency ที่ raise จะ short-circuit ทันที ไม่ไป
-    # แตะ dependency ถัดไปในลำดับพารามิเตอร์
-    api_key: str = Security(verify_api_key),
+    api_key: dict = Security(verify_api_key),
     pool: asyncpg.Pool = Depends(get_db_pool),
 ):
-    """Server-Sent Events stream — ข้อมูลทุก 5 วินาที (Swagger จะหมุนตลอด ปกติของ SSE)"""
-    # [FIX] ลบ manual check `if api_key != API_KEY: raise HTTPException(...)`
-    # ออกจากตรงนี้ทั้งหมด — verify_api_key() จัดการให้แล้วตั้งแต่ระดับ
-    # dependency ด้านบน ไม่ต้องเช็คซ้ำในบอดี้ฟังก์ชันอีก
-
     async def event_generator():
         try:
             while True:
                 try:
-                    # [NEW — prompt #8] cache-aside: เช็ค Redis ก่อน
-                    # query DB เสมอ, fallback DB อัตโนมัติถ้า cache
-                    # miss หรือ Redis ล่ม (ดู _get_fleet_live_data())
                     data_list = await _get_fleet_live_data(pool)
                     data = json.dumps(data_list, default=str)
                     yield f"data: {data}\n\n"
