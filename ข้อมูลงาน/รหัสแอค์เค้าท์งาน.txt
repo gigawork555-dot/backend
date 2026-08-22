@@ -1,0 +1,87 @@
+// #define PROVISION_MODE   // ← uncomment เพื่อเขียน NVS ครั้งแรก-. EMQX (MQTT Broker)
+ทำตอนแก้โค้ดฝั่ง iot
+
+จะใช้งานได้ก็ต่อเมื่อเชื่อม
+	
+   - Container : emqx
+   - Image     : emqx/emqx:latest (6.0.0 Enterprise)
+   - MQTT Port : 1884
+   - Dashboard : http://localhost:18083
+   - User/Pass : admin / public
+   - Status    : Connections=1, Topics=1 ✅
+
+-. TimescaleDB
+   - Container : timescaledb
+   - Image     : timescale/timescaledb:latest-pg16
+   - host:localhost
+   - Host Port : 5435
+   - Database  : fleet_db
+   - User/Pass : fleet_user / fleet_pass
+   - psql cmd  : docker exec -it timescaledb psql -U fleet_user -d fleet_db
+
+////////////////////////////////////////////////////////////////////
+- การเชื่อมในเว็บ emqxx กรณีส่งข้อมูลตรงสดจากเว็บไซต์ลงดาต้าเบตเลยไม่ผ่านโค้ด (ไม่ทำ)
+Connector Name : fleet_timescaledb
+Description : Fleet TimescaleDB
+Server Host : host.docker.internal:5434
+Database Name : fleet_db
+Username : fleet_user
+Password : ••••••••••
+///////////////////////////////////////////////////////////////////
+
+cd fleet-backend
+.venv\Scripts\activate
+pip install -r requirements.txt   # ติดตั้ง paho-mqtt ที่เพิ่มมา
+uvicorn app.main:app --reload
+
+
+account emqxx
+admin
+admin123
+http://localhost:18083/#/dashboard/overview
+
+account timescalDB
+fleet
+fleet123
+
+คำสั่งรันส่งข้อมูล
+uvicorn app.main:app --reload
+
+ดูคำสั่ง json
+kotchasaan/fleet/#
+
+สิ่งที่แก้ในiot
+-platform.ini
+D ARDUINO_USB_MODE=1
+D ARDUINO_USB_CDC_ON_BOOT=0
+-main.ccp
+wifiClient.setInsecure();
+-config
+-secure
+
+
+ในการเปิดเซฟเวอร์ api รัน python run.py ใช้ terminal คนละตัวกับ mqtt_s
+หน้าเว็บ api ของฉัน
+- http://localhost:8000/docs (local)
+- เพื่อนเข้าไม่ได้เพราะ Windows Firewall บล็อก port 8000 ครับ ต้องเปิด port ก่อน
+รันคำสั่งนี้ใน PowerShell แบบ Run as Administrator:
+powershellnetsh advfirewall firewall add rule name="Fleet API Port 8000" dir=in action=allow protocol=TCP localport=8000
+แล้วรัน server ใหม่โดยเปลี่ยน host ด้วย:
+powershell# run.py แก้ host จาก 127.0.0.1 เป็น 0.0.0.0
+uvicorn.run(
+    "app.main:app",
+    host="0.0.0.0",   # ← แก้ตรงนี้
+    port=8000,
+    reload=False
+)
+แล้วรันใหม่:
+powershell.venv\Scripts\python run.py
+- http://192.168.1.43:8000/docs (public) เปลี่ยนได้ตลอดตาม ip คอมตัวเอง
+- http://192.168.1.42:8000/api/v1/vehicles/1/location (ตัวlocation) สำเร็จ
+-รหัส api ktc-fleet-2026-secret
+
+
+///////////////////////รหัสเข้าหน้า admin ของ api///////////////////////
+username : admin
+password : admin1234
+//////////////////////////////////////////////////////////////////
