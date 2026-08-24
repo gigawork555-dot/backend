@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8" />
+<title>Kotchasaan Developer Portal — API Key</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 560px; margin: 40px auto; padding: 0 16px; color: #1a1a1a; }
+  h1 { font-size: 20px; }
+  .card { border: 1px solid #ddd; border-radius: 8px; padding: 20px; margin-top: 16px; }
+  label { display: block; margin: 10px 0 4px; font-size: 14px; }
+  input { width: 100%; padding: 8px; box-sizing: border-box; border: 1px solid #ccc; border-radius: 4px; }
+  button { margin-top: 12px; padding: 8px 14px; border: none; border-radius: 4px; cursor: pointer; background: #1a73e8; color: #fff; }
+  button.secondary { background: #d93025; }
+  button.ghost { background: #666; }
+  .hidden { display: none; }
+  .key-box { background: #f5f5f5; padding: 10px; border-radius: 4px; font-family: monospace; word-break: break-all; margin-top: 8px; }
+  .warn { color: #d93025; font-weight: bold; margin-top: 8px; }
+  .muted { color: #666; font-size: 13px; }
+  .modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.4); display: flex; align-items: center; justify-content: center; z-index: 1000; }
+  .modal { background: #fff; padding: 20px; border-radius: 8px; width: 320px; }
+  .error { color: #d93025; font-size: 13px; margin-top: 6px; }
+</style>
+</head>
+<body>
+
+<h1>Kotchasaan Developer Portal</h1>
+
+<!-- ── Login view ─────────────────────────────────────────── -->
+<div id="loginView" class="card">
+  <h2>เข้าสู่ระบบ</h2>
+  <label>Username</label>
+  <input id="loginUsername" type="text" autocomplete="username" />
+  <label>Password</label>
+  <input id="loginPassword" type="password" autocomplete="current-password" />
+  <div id="loginError" class="error"></div>
+  <button onclick="doLogin()">เข้าสู่ระบบ</button>
+</div>
+
+<!-- ── Dashboard view ─────────────────────────────────────── -->
+<div id="dashboardView" class="card hidden">
+  <h2>API Key ของฉัน</h2>
+  <div id="keyStatus" class="muted">กำลังโหลด...</div>
+  <div id="keyMeta"></div>
+  <button onclick="doRegenerate()">Regenerate Key</button>
+  <button class="secondary" onclick="doRevoke()">Revoke Key</button>
+  <button class="ghost" onclick="doLogout()">ออกจากระบบ</button>
+
+  <div id="newKeyBox" class="hidden">
+    <p class="warn">⚠️ คัดลอก API Key นี้ไว้ตอนนี้ — ระบบจะไม่แสดงค่านี้ซ้ำอีก</p>
+    <div class="key-box" id="newKeyValue"></div>
+    <button onclick="copyKey(event)">คัดลอก</button>
+  </div>
+</div>
+
+<script>
+const API_BASE = "";
+
+function getToken() { return sessionStorage.getItem("jwt"); }
+function setToken(t) { sessionStorage.setItem("jwt", t); }
+function clearToken() { sessionStorage.removeItem("jwt"); }
+
+async function doLogin() {
+  const username = document.getElementById("loginUsername").value;
+  const password = document.getElementById("loginPassword").value;
+  const errEl = document.getElementById("loginError");
+  errEl.textContent = "";
+
+  try {
+    const body = new URLSearchParams();
+    body.set("username", username);
+    body.set("password", password);
+
+    const resp = await fetch(API_BASE + "/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body,
+    });
+
+    if (!resp.ok) {
+      const data = await resp.json().catch(() => ({}));
+      errEl.textContent = data.detail || "เข้าสู่ระบบไม่สำเร็จ";
+      return;
+    }
+
+    const data = await resp.json();
+    setToken(data.access_token);
+    showDashboard();
+  } catch (e) {
+    errEl.textContent = "เชื่อมต่อเซิร์ฟเวอร์ไม่ได้: " + e;
+  }
+}
+
+function doLogout() {
+  clearToken();
+  document.getElementById("dashboardView").classList.add("hidden");
+  document.getElementById("loginView").classList.remove("hidden");
+  document.getElementById("loginError").textContent = "";
+  document.getElementById("loginPassword").value = "";
+}
+
+async function showDashboard() {
+  document.getElementById("loginView").classList.add("hidden");
+  document.getElementById("dashboardView").classList.remove("hidden");
+  document.getElementById("newKeyBox").classList.add("hidden");
+  await loadKeyStatus();
+}
+
+async function loadKeyStatus() {
+  const statusEl = document.getElementById("keyStatus");
+  const metaEl = document.getElementById("keyMeta");
+  statusEl.textContent = "กำลังโหลด...";
+  metaEl.innerHTML = "";
+
+  const resp = await fetch(API_BASE + "/developer/me/api-key", {
+    headers: { Authorization: "Bearer " + getToken() },
+  });
+
+  if (resp.status === 401) {
+    doLogout();
+    document.getElementById("loginError").textContent =
+      "เซสชันหมดอายุ กรุณาเข้าสู่ระบบใหม่";
+    return;
+  }
+
+  const data = await resp.json();
+
+  if (!data.has_key) {
+    statusEl.textContent = "ยังไม่มี API Key — กด Regenerate เพื่อสร้างครั้งแรก";
+    return;
+  }
+
+  statusEl.textContent = "Key ปัจจุบัน: " + data.masked_key;
+  metaEl.innerHTML =
+    `<p class="muted">สร้างเมื่อ: ${data.created_at || "-"}<br/>` +
+    `หมุนล่าสุด: ${data.last_rotated_at || "-"}<br/>` +
+    `ใช้งานล่าสุด: ${data.last_used || "-"}</p>`;
+}
+
+// [แก้ไข] เอา step-up password modal ออกทั้งหมดตามคำขอ — ยืนยันตัวตน
+// ด้วย JWT ที่ได้ตอน login (ผ่าน user ที่สร้างจาก create_user.py) เพียง
+// อย่างเดียว ไม่ต้องกรอกรหัสผ่านซ้ำอีกครั้งก่อน regenerate/revoke
+async function _callKeyAction(path, label) {
+  try {
+    const resp = await fetch(API_BASE + path, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: "Bearer " + getToken(),
+      },
+      body: JSON.stringify({}),
+    });
+
+    // JWT หมดอายุ/ไม่ถูกต้อง → บังคับ logout กลับไปหน้า login
+    if (resp.status === 401) {
+      const data = await resp.json().catch(() => ({}));
+      doLogout();
+      document.getElementById("loginError").textContent =
+        (data.detail || "เซสชันหมดอายุ") + " — กรุณาเข้าสู่ระบบใหม่อีกครั้ง";
+      return;
+    }
+
+    const data = await resp.json().catch(() => ({}));
+
+    if (!resp.ok) {
+      alert(data.detail || (label + "ไม่สำเร็จ"));
+      return;
+    }
+
+    if (path.endsWith("/regenerate")) {
+      document.getElementById("newKeyBox").classList.remove("hidden");
+      document.getElementById("newKeyValue").textContent = data.api_key;
+    }
+
+    await loadKeyStatus();
+  } catch (e) {
+    alert("เชื่อมต่อเซิร์ฟเวอร์ไม่ได้: " + e);
+  }
+}
+
+function doRegenerate() {
+  _callKeyAction("/developer/me/api-key/regenerate", "สร้าง Key ใหม่");
+}
+
+function doRevoke() {
+  if (!confirm("ยืนยัน Revoke API Key นี้?")) return;
+  _callKeyAction("/developer/me/api-key/revoke", "Revoke Key");
+}
+
+// [แก้ไข] navigator.clipboard.writeText() ใช้ได้เฉพาะ secure context
+// (https:// หรือ localhost) เท่านั้น — ถ้าเปิดผ่าน http:// ธรรมดา
+// (เช่น http://192.168.1.48:8001) API นี้จะถูกบล็อก/reject เงียบๆ
+// โดยไม่มี error โผล่ให้เห็น ทำให้ดูเหมือนปุ่มกดไม่ได้ผล
+// แก้โดยเช็คก่อนว่ามี clipboard API ให้ใช้ไหม ถ้าไม่มีหรือ error
+// ให้ fallback ไปใช้วิธีเก่า (สร้าง <textarea> ชั่วคราว, select,
+// document.execCommand('copy')) ซึ่งทำงานได้แม้ non-secure context
+// พร้อมขึ้นข้อความแจ้งผลให้เห็นชัดเจนทั้งสองกรณี
+function copyKey(evt) {
+  const val = document.getElementById("newKeyValue").textContent;
+  const btn = evt ? evt.target : null;
+
+  function showCopiedFeedback() {
+    if (btn) {
+      const original = btn.textContent;
+      btn.textContent = "คัดลอกแล้ว ✓";
+      setTimeout(() => { btn.textContent = original; }, 1500);
+    } else {
+      alert("คัดลอก API Key แล้ว");
+    }
+  }
+
+  function fallbackCopy() {
+    const textarea = document.createElement("textarea");
+    textarea.value = val;
+    // กันไม่ให้ textarea เลื่อนหน้าจอหรือถูกมองเห็น
+    textarea.style.position = "fixed";
+    textarea.style.top = "-9999px";
+    textarea.style.left = "-9999px";
+    document.body.appendChild(textarea);
+    textarea.focus();
+    textarea.select();
+
+    let success = false;
+    try {
+      success = document.execCommand("copy");
+    } catch (e) {
+      success = false;
+    }
+    document.body.removeChild(textarea);
+
+    if (success) {
+      showCopiedFeedback();
+    } else {
+      alert("คัดลอกอัตโนมัติไม่ได้ กรุณาเลือกข้อความแล้วกด Ctrl+C ด้วยตนเอง");
+    }
+  }
+
+  if (navigator.clipboard && navigator.clipboard.writeText && window.isSecureContext) {
+    navigator.clipboard.writeText(val).then(showCopiedFeedback).catch(fallbackCopy);
+  } else {
+    // ไม่ใช่ secure context (เช่น http:// บน IP วง LAN) → ใช้ fallback ทันที
+    fallbackCopy();
+  }
+}
+
+// ── Boot ──────────────────────────────────────────────────
+if (getToken()) {
+  showDashboard();
+}
+</script>
+</body>
+</html>
