@@ -353,11 +353,34 @@ async def api_tester():
     return FileResponse("static/fleet_api_tester.html")
 
 
-# [NEW] Developer Portal — self-service API key management UI
-# แยกเส้นทางจาก /docs (Swagger UI) โดยเจตนา
-@app.get("/portal", include_in_schema=False)
-async def developer_portal():
-    return FileResponse("static/developer_portal.html")
+# ──────────────────────────────────────────────
+# [PATCH — 2 จุดที่แก้ตาม MAIN_PY_PATCH.md]
+#
+# เดิม /portal เป็น route เดียวชี้ไปไฟล์เดียว
+# (static/developer_portal.html) — ตอนนี้ portal ถูกทำใหม่เป็น
+# หลายหน้า (static/portal/*.html + assets/) จึง:
+#
+#   1) ลบ route @app.get("/portal") เดิมทิ้ง
+#   2) mount "/portal" เป็น static directory แทน (html=True เพื่อให้
+#      /portal/ == /portal/index.html โดยอัตโนมัติ)
+#
+# ผลลัพธ์ URL หลัง mount:
+#   /portal/                 → index.html   (Overview)
+#   /portal/register.html    → Register
+#   /portal/login.html       → Login
+#   /portal/dashboard.html   → User Dashboard (role=user)
+#   /portal/admin.html       → Admin Dashboard (role=admin)
+#   /portal/assets/*.css,*.js → shared files (common.js, style.css)
+# ──────────────────────────────────────────────
+
+try:
+    app.mount(
+        "/portal",
+        StaticFiles(directory="static/portal", html=True),
+        name="portal",
+    )
+except Exception:
+    pass
 
 # ──────────────────────────────────────────────
 # Routers
