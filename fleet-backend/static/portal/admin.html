@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8" />
+<title>Admin Dashboard — Kotchasaan Developer Portal</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<link rel="stylesheet" href="assets/style.css" />
+</head>
+<body>
+
+<div class="topbar">
+  <a class="brand" href="./">Kotchasaan Developer Portal</a>
+  <div class="actions" id="topbarActions"></div>
+</div>
+
+<div class="wrap admin-wrap">
+  <div class="card">
+    <h2>Admin Dashboard</h2>
+
+    <div class="section-title">รออนุมัติ (Pending)</div>
+    <table id="pendingTable">
+      <thead><tr><th>Username</th><th>Email</th><th>ชื่อ</th><th>สมัครเมื่อ</th><th></th></tr></thead>
+      <tbody></tbody>
+    </table>
+
+    <div class="section-title">ผู้ใช้ทั้งหมด</div>
+    <table id="usersTable">
+      <thead><tr><th>Username</th><th>Role</th><th>สถานะบัญชี</th><th>สถานะ Key</th><th></th></tr></thead>
+      <tbody></tbody>
+    </table>
+
+    <div id="adminError" class="error"></div>
+    <div id="adminSuccess" class="success"></div>
+  </div>
+</div>
+
+<script src="assets/common.js"></script>
+<script>
+if (!requireRole("admin")) { /* redirected */ }
+
+async function loadAll() {
+  document.getElementById("adminError").textContent = "";
+  document.getElementById("adminSuccess").textContent = "";
+
+  try {
+    const [pendingResp, usersResp] = await Promise.all([
+      apiFetch("/auth/admin/pending-users"),
+      apiFetch("/auth/admin/users"),
+    ]);
+    const pending = await pendingResp.json();
+    const users = await usersResp.json();
+
+    renderPendingTable(pending.pending_users || []);
+    renderUsersTable(users.users || []);
+  } catch (e) {
+    document.getElementById("adminError").textContent = "โหลดข้อมูลไม่สำเร็จ: " + e;
+  }
+}
+
+function renderPendingTable(list) {
+  const tbody = document.querySelector("#pendingTable tbody");
+  tbody.innerHTML = "";
+  if (list.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="5" class="muted">ไม่มีคำขอรออนุมัติ</td></tr>`;
+    return;
+  }
+  for (const u of list) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td>${u.username}</td>
+      <td>${u.email}</td>
+      <td>${u.full_name || "-"}</td>
+      <td>${new Date(u.created_at).toLocaleString()}</td>
+      <td class="row-actions"><button data-approve="${u.id}">อนุมัติ</button></td>`;
+    tbody.appendChild(tr);
+  }
+  tbody.querySelectorAll("[data-approve]").forEach(btn => {
+    btn.addEventListener("click", () => approveUser(btn.getAttribute("data-approve")));
+  });
+}
+
+function keyBadge(u) {
+  if (!u.key_id) return `<span class="badge none">ยังไม่สร้าง</span>`;
+  return u.key_active
+    ? `<span class="badge active">ใช้งานอยู่ (${u.key_prefix}****)</span>`
+    : `<span class="badge revoked">ถูกระงับ</span>`;
+}
+
+function renderUsersTable(list) {
+  const tbody = document.querySelector("#usersTable tbody");
+  tbody.innerHTML = "";
+  for (const u of list) {
+    const tr = document.createElement("tr");
+    const accountBadge = u.account_active
+      ? `<span class="badge active">Active</span>`
+      : `<span class="badge pending">Pending</span>`;
+
+    tr.innerHTML = `
+      <td>${u.username}</td>
+      <td>${u.role}</td>
+      <td>${accountBadge}</td>
+      <td>${keyBadge(u)}</td>
+      <td class="row-actions">
+        ${u.key_active ? `<button class="secondary" data-revoke="${u.id}">Revoke Key</button>` : ""}
+        <button class="danger" data-delete="${u.id}">ลบ User</button>
+      </td>`;
+    tbody.appendChild(tr);
+  }
+  tbody.querySelectorAll("[data-revoke]").forEach(btn => {
+    btn.addEventListener("click", () => revokeKey(btn.getAttribute("data-revoke")));
+  });
+  tbody.querySelectorAll("[data-delete]").forEach(btn => {
+    btn.addEventListener("click", () => deleteUser(btn.getAttribute("data-delete")));
+  });
+}
+
+async function approveUser(userId) {
+  const resp = await apiFetch(`/auth/admin/users/${userId}/approve`, { method: "POST" });
+  const data = await resp.json();
+  if (!resp.ok) { document.getElementById("adminError").textContent = data.detail; return; }
+  document.getElementById("adminSuccess").textContent = `อนุมัติ ${data.user.username} สำเร็จ`;
+  await loadAll();
+}
+
+async function revokeKey(userId) {
+  if (!confirm("ยืนยันระงับ API Key ของ user นี้?")) return;
+  const resp = await apiFetch(`/auth/admin/users/${userId}/revoke-key`, { method: "POST" });
+  const data = await resp.json();
+  if (!resp.ok) { document.getElementById("adminError").textContent = data.detail; return; }
+  document.getElementById("adminSuccess").textContent = "ระงับ Key สำเร็จ";
+  await loadAll();
+}
+
+async function deleteUser(userId) {
+  if (!confirm("ยืนยันลบ user นี้ถาวร? (Key ที่ผูกอยู่จะถูกลบไปด้วย และ user ต้องสมัครใหม่)")) return;
+  const resp = await apiFetch(`/auth/admin/users/${userId}`, { method: "DELETE" });
+  const data = await resp.json();
+  if (!resp.ok) { document.getElementById("adminError").textContent = data.detail; return; }
+  document.getElementById("adminSuccess").textContent = "ลบ user สำเร็จ";
+  await loadAll();
+}
+
+loadAll();
+</script>
+</body>
+</html>

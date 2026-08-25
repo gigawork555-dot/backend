@@ -15,6 +15,11 @@ async def get_user_by_username(
     conn: asyncpg.Connection,
     username: str
 ) -> Optional[dict]:
+    """
+    ใช้ตอน login เท่านั้น — WHERE is_active = TRUE บล็อกบัญชีที่ยัง
+    pending (รอ admin อนุมัติ) ไม่ให้ login ได้โดยอัตโนมัติ ไม่ต้อง
+    เขียน logic เช็ค pending แยกที่ /auth/login เลย
+    """
 
     row = await conn.fetchrow(
         """
@@ -26,6 +31,22 @@ async def get_user_by_username(
         username
     )
 
+    return dict(row) if row else None
+
+
+async def get_user_by_username_any_status(
+    conn: asyncpg.Connection,
+    username_or_email: str,
+) -> Optional[dict]:
+    """
+    เหมือน get_user_by_username() แต่ไม่กรอง is_active — ใช้ตอน
+    signup เพื่อเช็คว่า username/email ซ้ำหรือไม่ (รวมทั้งบัญชีที่
+    pending อยู่ด้วย ไม่ใช่แค่บัญชี active)
+    """
+    row = await conn.fetchrow(
+        "SELECT * FROM users WHERE username = $1 OR email = $1",
+        username_or_email,
+    )
     return dict(row) if row else None
 
 
@@ -64,19 +85,129 @@ async def update_last_login(
 
 
 # =====================================================
+# Public self-signup (pending approval)
+# =====================================================
+
+async def create_pending_user(
+    conn: asyncpg.Connection,
+    username: str,
+    email: str,
+    hashed_password: str,
+    full_name: Optional[str] = None,
+) -> dict:
+    """
+    สมัครสมาชิกด้วยตัวเอง — is_active = FALSE เสมอ, role = 'user' เสมอ
+    (ไม่มีทางสมัครเป็น admin เองผ่าน endpoint นี้)
+    """
+    row = await conn.fetchrow(
+        """
+        INSERT INTO users
+            (username, email, hashed_password, full_name, is_active, role)
+        VALUES
+            ($1, $2, $3, $4, FALSE, 'user')
+        RETURNING id, username, email, full_name, role, is_active, created_at
+        """,
+        username, email, hashed_password, full_name,
+    )
+    return dict(row)
+
+
+# =====================================================
+# Admin — approval queue
+# =====================================================
+
+async def list_pending_users(conn: asyncpg.Connection) -> list:
+    rows = await conn.fetch(
+        """
+        SELECT id, username, email, full_name, role, created_at
+        FROM users
+        WHERE is_active = FALSE
+        ORDER BY created_at ASC
+        """
+    )
+    return [dict(r) for r in rows]
+
+
+async def approve_user(conn: asyncpg.Connection, user_id: int) -> Optional[dict]:
+    row = await conn.fetchrow(
+        """
+        UPDATE users
+        SET is_active = TRUE
+        WHERE id = $1 AND is_active = FALSE
+        RETURNING id, username, email, full_name, role, is_active, created_at
+        """,
+        user_id,
+    )
+    return dict(row) if row else None
+
+
+# =====================================================
+# Admin — full user + key management (list, revoke, delete)
+# =====================================================
+
+async def list_all_users_with_key_status(conn: asyncpg.Connection) -> list:
+    """
+    รายชื่อ user ทั้งหมด + สถานะ key ปัจจุบัน (สำหรับหน้า Admin Dashboard)
+    """
+    rows = await conn.fetch(
+        """
+        SELECT
+            u.id, u.username, u.email, u.full_name, u.role,
+            u.is_active AS account_active,
+            u.created_at,
+            k.id            AS key_id,
+            k.key_prefix,
+            k.is_active     AS key_active,
+            k.created_at    AS key_created_at,
+            k.revoked_at
+        FROM users u
+        LEFT JOIN api_keys k
+               ON k.user_id = u.id
+              AND k.is_active = TRUE
+        ORDER BY u.created_at DESC
+        """
+    )
+    return [dict(r) for r in rows]
+
+
+async def delete_user(conn: asyncpg.Connection, user_id: int) -> bool:
+    """
+    ลบ user ทิ้งถาวร — api_keys ของ user นี้ถูกลบตามไปด้วยอัตโนมัติ
+    (FK: api_keys.user_id REFERENCES users(id) ON DELETE CASCADE,
+    ดู docker/postgres/init.sql) เพื่อให้ user ต้องสมัครใหม่ + ได้
+    key ใหม่ ตามดีไซน์ "generate key ได้ครั้งเดียวต่อ user"
+    """
+    result = await conn.execute(
+        "DELETE FROM users WHERE id = $1",
+        user_id,
+    )
+    try:
+        return int(result.split()[-1]) > 0
+    except (ValueError, IndexError, AttributeError):
+        return False
+
+
+async def admin_revoke_key_for_user(
+    conn: asyncpg.Connection,
+    user_id: int,
+) -> bool:
+    """
+    Admin สั่ง revoke key ของ user คนหนึ่ง — key หยุดใช้งานได้ทันที
+    แต่ account ของ user ยังอยู่ ไม่ถูกลบ — user คนนี้ล็อกอินเข้า
+    dashboard ได้ปกติ เห็นสถานะ "key ถูกระงับ" แต่ generate key ใหม่
+    เองไม่ได้ (ตามดีไซน์ generate-once) ต้องให้ admin delete user
+    แล้วสมัครใหม่เท่านั้นถึงจะได้ key ใหม่
+    """
+    return await revoke_user_api_key(conn, user_id)
+
+
+# =====================================================
 # API KEYS — 1 user = 1 active key (FDD §13)
 #
-# [SECURITY FIX] เดิม key_hash เก็บ secrets.token_hex(32) ตรงๆ ลง DB
-# (คือ plaintext key เอง แค่ตั้งชื่อคอลัมน์ผิด — ไม่ได้ hash จริง)
-# ถ้า DB รั่ว = ทุก API key รั่วทันที
-#
-# แก้ไข:
-#   - generate_api_key() คืน plaintext key รูปแบบ "ktc_<32 bytes urlsafe>"
-#     ให้ user เห็น "ครั้งเดียว" ตอนสร้าง/regenerate เท่านั้น
-#   - เก็บเฉพาะ SHA-256 hash ของ key ลง DB (คอลัมน์ key_hash เดิม
-#     ตอนนี้เก็บ hash จริงแล้ว) — DB รั่วไม่ทำให้ key ใช้งานได้
-#   - verify (get_api_key) ต้อง hash ค่าที่รับจาก header ก่อนเทียบ
-#     ด้วย timing-safe compare (hmac.compare_digest)
+# [SECURITY] key_hash เก็บ SHA-256 hash เท่านั้น ไม่เคยเก็บ plaintext
+# ลง DB — plaintext แสดงให้ user เห็น "ครั้งเดียว" ตอนสร้างเท่านั้น
+# verify (get_api_key) ต้อง hash ค่าที่รับมาก่อนเทียบด้วย timing-safe
+# compare (hmac.compare_digest)
 # =====================================================
 
 API_KEY_PREFIX = "ktc_"
@@ -101,7 +232,6 @@ def generate_api_key() -> tuple[str, str, str]:
     random_part = secrets.token_urlsafe(32)
     plaintext_key = f"{API_KEY_PREFIX}{random_part}"
     key_hash = _hash_api_key(plaintext_key)
-    # เก็บ prefix แบบสั้น ๆ ที่ไม่เปิดเผยความลับ (ktc_ + 8 ตัวแรกของ random part)
     key_prefix = plaintext_key[: len(API_KEY_PREFIX) + 8]
     return plaintext_key, key_hash, key_prefix
 
@@ -116,7 +246,7 @@ async def create_api_key(
 
     หมายเหตุ backward-compat: ฟังก์ชันนี้ยังคง signature เดิม (key_name)
     ไว้สำหรับ caller เก่า (เช่น /auth/api-keys ของ admin) แต่เพิ่ม
-    user_id เป็น optional parameter สำหรับ flow ใหม่ (1 user = 1 key)
+    user_id เป็น optional parameter สำหรับ flow "1 user = 1 key"
     คืน dict ที่มี "api_key" (plaintext, แสดงครั้งเดียว) แนบมาด้วยเสมอ
     """
 
@@ -162,27 +292,15 @@ async def get_api_key(
     """
     Verify a plaintext API key against the stored hash.
 
-    [SECURITY FIX] ต้อง hash ค่าที่รับเข้ามาก่อนเทียบกับ DB เสมอ —
-    ห้ามเทียบ plaintext กับ column ตรงๆ อีกต่อไป ใช้ timing-safe
-    compare (hmac.compare_digest) เพื่อป้องกัน timing attack
+    ต้อง hash ค่าที่รับเข้ามาก่อนเทียบกับ DB เสมอ ห้ามเทียบ plaintext
+    กับ column ตรงๆ — ใช้ timing-safe compare (hmac.compare_digest)
+    เพื่อป้องกัน timing attack
     """
     if not api_key:
         return None
 
     candidate_hash = _hash_api_key(api_key)
 
-    row = await conn.fetchrow(
-        """
-        SELECT *
-        FROM api_keys
-        WHERE is_active = TRUE
-        """
-    )
-
-    # NOTE: ดึงเฉพาะแถวที่ active มาเทียบทีละแถวด้วย compare_digest
-    # (ไม่ WHERE key_hash = $1 ตรงๆ เพื่อคง timing-safe semantics
-    # แม้จำนวนแถว active จะน้อย — ระบบนี้ 1 user = 1 active key เท่านั้น
-    # จึงจำนวนแถวที่ต้องวนเทียบเท่ากับจำนวน user ที่มี key เปิดใช้งานอยู่)
     rows = await conn.fetch(
         """
         SELECT *
@@ -243,12 +361,11 @@ async def regenerate_api_key_for_user(
     key_name: str = "developer-portal-key",
 ) -> dict:
     """
+    [เก็บไว้เผื่อใช้งานฝั่ง admin ในอนาคต — ไม่ได้ผูกกับ endpoint
+    self-service ของ user แล้ว เพราะ user generate ได้ครั้งเดียว]
+
     Revoke key เก่า (ถ้ามี) แล้วออก key ใหม่ให้ user คนนี้ ภายใน
     transaction เดียวกัน (caller ต้องเปิด conn.transaction() ครอบ)
-
-    Unique partial index (uq_api_keys_one_active_per_user) เป็นตัวกัน
-    ชั้นสุดท้ายไม่ให้มี 2 key active พร้อมกันสำหรับ user เดียวกัน แม้จะ
-    revoke ก่อนแล้วก็ตาม (belt-and-suspenders)
     """
     await revoke_user_api_key(conn, user_id)
     return await create_api_key(conn, key_name, user_id=user_id)
@@ -303,8 +420,8 @@ async def update_key_last_used(
     """
     อัปเดต last_used timestamp ใน api_keys
 
-    [SECURITY FIX] ต้อง hash api_key ก่อน UPDATE WHERE เช่นกัน เพราะ
-    key_hash column ตอนนี้เก็บ SHA-256 hash ไม่ใช่ plaintext แล้ว
+    ต้อง hash api_key ก่อน UPDATE WHERE เช่นกัน เพราะ key_hash column
+    เก็บ SHA-256 hash ไม่ใช่ plaintext
     """
     candidate_hash = _hash_api_key(api_key)
     await conn.execute(

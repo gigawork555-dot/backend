@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8" />
+<title>สมัครสมาชิก — Kotchasaan Developer Portal</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<link rel="stylesheet" href="assets/style.css" />
+</head>
+<body>
+
+<div class="topbar">
+  <a class="brand" href="./">Kotchasaan Developer Portal</a>
+  <div class="actions" id="topbarActions"></div>
+</div>
+
+<div class="wrap">
+  <div class="card">
+    <h2>สมัครสมาชิก</h2>
+    <p class="muted">บัญชีของคุณจะอยู่ในสถานะ "รออนุมัติ" จนกว่าผู้ดูแลระบบจะยืนยัน</p>
+
+    <label>Username</label>
+    <input id="regUsername" type="text" autocomplete="username" />
+    <label>Email</label>
+    <input id="regEmail" type="email" autocomplete="email" />
+    <label>ชื่อ-นามสกุล</label>
+    <input id="regFullName" type="text" />
+    <label>Password</label>
+    <input id="regPassword" type="password" autocomplete="new-password" />
+
+    <div id="regError" class="error"></div>
+    <div id="regSuccess" class="success"></div>
+
+    <div style="margin-top:14px;">
+      <button onclick="doSignup()">สมัครสมาชิก</button>
+      <a class="btn ghost" href="login.html">มีบัญชีอยู่แล้ว?</a>
+    </div>
+  </div>
+</div>
+
+<script src="assets/common.js"></script>
+<script>
+if (redirectIfLoggedIn()) { /* already logged in, redirected away */ }
+
+async function doSignup() {
+  const errEl = document.getElementById("regError");
+  const okEl = document.getElementById("regSuccess");
+  errEl.textContent = ""; okEl.textContent = "";
+
+  const payload = {
+    username: document.getElementById("regUsername").value,
+    email: document.getElementById("regEmail").value,
+    full_name: document.getElementById("regFullName").value || null,
+    password: document.getElementById("regPassword").value,
+  };
+
+  try {
+    const resp = await fetch(API_BASE + "/auth/signup", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const data = await resp.json();
+
+    if (!resp.ok) { errEl.textContent = data.detail || "สมัครไม่สำเร็จ"; return; }
+
+    okEl.textContent = "สมัครสำเร็จ! กรุณารอผู้ดูแลระบบอนุมัติ จากนั้นจึงเข้าสู่ระบบได้";
+    document.querySelectorAll("input").forEach(i => i.value = "");
+  } catch (e) {
+    errEl.textContent = "เชื่อมต่อเซิร์ฟเวอร์ไม่ได้: " + e;
+  }
+}
+</script>
+</body>
+</html>

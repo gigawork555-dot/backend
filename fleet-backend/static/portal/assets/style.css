@@ -1,0 +1,47 @@
+* { box-sizing: border-box; }
+body { font-family: system-ui, sans-serif; margin: 0; color: #1a1a1a; background: #fafafa; }
+
+.topbar {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 14px 28px; background: #fff; border-bottom: 1px solid #e5e5e5;
+}
+.topbar .brand { font-weight: 700; font-size: 16px; text-decoration: none; color: #1a1a1a; }
+.topbar .actions button, .topbar .actions a.btn { margin-left: 8px; }
+.topbar .actions .who { margin-right: 10px; font-size: 13px; color: #555; }
+
+.wrap { max-width: 640px; margin: 40px auto; padding: 0 16px; }
+.admin-wrap { max-width: 960px; }
+.card { background: #fff; border: 1px solid #ddd; border-radius: 8px; padding: 24px; margin-top: 16px; }
+h1 { font-size: 22px; margin: 0 0 4px; }
+h2 { font-size: 18px; }
+p.lead { color: #555; }
+
+label { display: block; margin: 10px 0 4px; font-size: 14px; }
+input, select { width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 4px; }
+button, a.btn {
+  display: inline-block; padding: 8px 14px; border: none; border-radius: 4px;
+  cursor: pointer; background: #1a73e8; color: #fff; font-size: 14px; text-decoration: none;
+}
+button.secondary, a.btn.secondary { background: #666; }
+button.danger { background: #d93025; }
+button.ghost, a.btn.ghost { background: transparent; color: #1a73e8; border: 1px solid #1a73e8; }
+button:disabled { background: #ccc; cursor: not-allowed; }
+
+.hidden { display: none; }
+.key-box { background: #f5f5f5; padding: 10px; border-radius: 4px; font-family: monospace; word-break: break-all; margin-top: 8px; }
+.warn { color: #d93025; font-weight: bold; margin-top: 8px; }
+.muted { color: #666; font-size: 13px; }
+.error { color: #d93025; font-size: 13px; margin-top: 6px; }
+.success { color: #188038; font-size: 13px; margin-top: 6px; }
+
+.badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 12px; }
+.badge.pending { background: #fef7e0; color: #b06000; }
+.badge.active  { background: #e6f4ea; color: #188038; }
+.badge.revoked { background: #fce8e6; color: #c5221f; }
+.badge.none    { background: #eee; color: #666; }
+
+table { width: 100%; border-collapse: collapse; margin-top: 12px; font-size: 13px; }
+th, td { text-align: left; padding: 8px; border-bottom: 1px solid #eee; }
+th { color: #666; font-weight: 600; }
+.row-actions button { margin-right: 4px; padding: 4px 8px; font-size: 12px; }
+.section-title { margin-top: 28px; margin-bottom: 6px; font-size: 15px; color: #333; }

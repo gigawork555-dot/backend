@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8" />
+<title>เข้าสู่ระบบ — Kotchasaan Developer Portal</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<link rel="stylesheet" href="assets/style.css" />
+</head>
+<body>
+
+<div class="topbar">
+  <a class="brand" href="./">Kotchasaan Developer Portal</a>
+  <div class="actions" id="topbarActions"></div>
+</div>
+
+<div class="wrap">
+  <div class="card">
+    <h2>เข้าสู่ระบบ</h2>
+    <label>Username</label>
+    <input id="loginUsername" type="text" autocomplete="username" />
+    <label>Password</label>
+    <input id="loginPassword" type="password" autocomplete="current-password" />
+    <div id="loginError" class="error"></div>
+    <div style="margin-top:14px;">
+      <button onclick="doLogin()">เข้าสู่ระบบ</button>
+      <a class="btn ghost" href="register.html">ยังไม่มีบัญชี?</a>
+    </div>
+  </div>
+</div>
+
+<script src="assets/common.js"></script>
+<script>
+if (redirectIfLoggedIn()) { /* already logged in, redirected away */ }
+
+document.getElementById("loginPassword").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") doLogin();
+});
+
+async function doLogin() {
+  const errEl = document.getElementById("loginError");
+  errEl.textContent = "";
+
+  const username = document.getElementById("loginUsername").value;
+  const password = document.getElementById("loginPassword").value;
+
+  try {
+    const body = new URLSearchParams();
+    body.set("username", username);
+    body.set("password", password);
+
+    const resp = await fetch(API_BASE + "/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body,
+    });
+
+    const data = await resp.json();
+
+    if (!resp.ok) {
+      errEl.textContent = data.detail || "เข้าสู่ระบบไม่สำเร็จ (บัญชีอาจยังไม่ได้รับอนุมัติ)";
+      return;
+    }
+
+    setToken(data.access_token);
+    setRole(data.role);
+    setUsername(data.username);
+
+    window.location.href = data.role === "admin" ? "admin.html" : "dashboard.html";
+  } catch (e) {
+    errEl.textContent = "เชื่อมต่อเซิร์ฟเวอร์ไม่ได้: " + e;
+  }
+}
+</script>
+</body>
+</html>

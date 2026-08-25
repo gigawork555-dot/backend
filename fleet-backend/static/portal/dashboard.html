@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8" />
+<title>API Key ของฉัน — Kotchasaan Developer Portal</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<link rel="stylesheet" href="assets/style.css" />
+</head>
+<body>
+
+<div class="topbar">
+  <a class="brand" href="./">Kotchasaan Developer Portal</a>
+  <div class="actions" id="topbarActions"></div>
+</div>
+
+<div class="wrap">
+  <div class="card">
+    <h2>API Key ของฉัน</h2>
+    <div id="userKeyStatus" class="muted">กำลังโหลด...</div>
+    <div id="userKeyMeta"></div>
+
+    <button id="generateBtn" onclick="doGenerate()" disabled>สร้าง API Key</button>
+
+    <div id="newKeyBox" class="hidden">
+      <p class="warn">⚠️ คัดลอก API Key นี้ไว้ตอนนี้ — ระบบจะไม่แสดงค่านี้ซ้ำอีก และสร้างใหม่ไม่ได้อีก</p>
+      <div class="key-box" id="newKeyValue"></div>
+      <button type="button" id="copyBtn">คัดลอก</button>
+    </div>
+
+    <div id="generateError" class="error"></div>
+  </div>
+</div>
+
+<script src="assets/common.js"></script>
+<script>
+if (!requireRole("user")) { /* redirected */ }
+
+// ── Load current key status (called ONLY on page load / manual refresh —
+//    NEVER called again right after a successful generate, which is
+//    exactly the bug that made the new key box disappear before you
+//    could click Copy: a refresh call was re-hiding it immediately) ──
+async function loadStatus() {
+  const statusEl = document.getElementById("userKeyStatus");
+  const metaEl = document.getElementById("userKeyMeta");
+  const genBtn = document.getElementById("generateBtn");
+
+  statusEl.textContent = "กำลังโหลด...";
+  metaEl.innerHTML = "";
+
+  const resp = await apiFetch("/developer/me/api-key");
+  const data = await resp.json();
+
+  if (!data.has_key) {
+    statusEl.textContent = "คุณยังไม่มี API Key — กด \"สร้าง API Key\" เพื่อสร้าง (ทำได้ครั้งเดียวเท่านั้น)";
+    genBtn.disabled = false;
+  } else {
+    statusEl.textContent = "Key ปัจจุบัน: " + data.masked_key;
+    metaEl.innerHTML = `<p class="muted">สร้างเมื่อ: ${data.created_at || "-"}<br/>ใช้งานล่าสุด: ${data.last_used || "-"}</p>
+      <p class="muted">ระบบนี้สร้าง Key ได้ครั้งเดียวต่อบัญชี หาก Key มีปัญหา กรุณาติดต่อผู้ดูแลระบบ</p>`;
+    genBtn.disabled = true;
+  }
+}
+
+async function doGenerate() {
+  const errEl = document.getElementById("generateError");
+  const genBtn = document.getElementById("generateBtn");
+  const statusEl = document.getElementById("userKeyStatus");
+  errEl.textContent = "";
+
+  genBtn.disabled = true; // optimistic — prevents double-click double-generate
+
+  const resp = await apiFetch("/developer/me/api-key/generate", { method: "POST" });
+  const data = await resp.json();
+
+  if (!resp.ok) {
+    errEl.textContent = data.detail || "สร้าง Key ไม่สำเร็จ";
+    genBtn.disabled = false; // allow retry if it genuinely failed
+    return;
+  }
+
+  // Show the key box and KEEP it visible — do NOT call loadStatus() here.
+  document.getElementById("newKeyBox").classList.remove("hidden");
+  document.getElementById("newKeyValue").textContent = data.api_key;
+
+  // Update the status line manually instead of re-fetching (re-fetching
+  // would hide the box again, which was the original bug).
+  statusEl.textContent = "Key ปัจจุบัน: " + data.masked_key;
+  genBtn.disabled = true;
+}
+
+document.getElementById("copyBtn").addEventListener("click", function () {
+  const text = document.getElementById("newKeyValue").textContent;
+  copyTextToButton(text, this);
+});
+
+loadStatus();
+</script>
+</body>
+</html>

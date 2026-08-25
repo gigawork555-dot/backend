@@ -6,6 +6,13 @@ import asyncpg
 
 from app.auth.models import (
     get_user_by_username,
+    get_user_by_username_any_status,
+    create_pending_user,
+    list_pending_users,
+    approve_user,
+    list_all_users_with_key_status,
+    delete_user,
+    admin_revoke_key_for_user,
     update_last_login,
     create_api_key,
     list_api_keys,
@@ -34,10 +41,19 @@ class LoginResponse(BaseModel):
 
 
 class RegisterRequest(BaseModel):
+    """ใช้โดย /auth/register (admin-created user, active ทันที)"""
     username: str
     password: str
     full_name: Optional[str] = None
     role: str = "viewer"
+
+
+class SignupRequest(BaseModel):
+    """ใช้โดย /auth/signup (self-signup สาธารณะ, pending approval)"""
+    username: str
+    email: str
+    password: str
+    full_name: Optional[str] = None
 
 
 class CreateApiKeyRequest(BaseModel):
@@ -72,7 +88,7 @@ async def login(
             if not user:
                 raise HTTPException(
                     status_code=401,
-                    detail="Username หรือ Password ไม่ถูกต้อง"
+                    detail="Username หรือ Password ไม่ถูกต้อง หรือบัญชียังไม่ได้รับการอนุมัติ"
                 )
 
             if not verify_password(
@@ -112,6 +128,52 @@ async def login(
         )
 
 
+@router.post(
+    "/signup",
+    status_code=201,
+    summary="สมัครสมาชิกด้วยตัวเอง (สถานะ pending — รอ admin อนุมัติ)",
+)
+async def signup(
+    body: SignupRequest,
+    pool: asyncpg.Pool = Depends(get_db_pool),
+):
+    try:
+        async with pool.acquire() as conn:
+
+            existing = await get_user_by_username_any_status(conn, body.username)
+            if existing:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Username หรือ Email นี้มีอยู่แล้วในระบบ",
+                )
+
+            existing_email = await get_user_by_username_any_status(conn, body.email)
+            if existing_email:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Username หรือ Email นี้มีอยู่แล้วในระบบ",
+                )
+
+            hashed = hash_password(body.password)
+            user = await create_pending_user(
+                conn,
+                username=body.username,
+                email=body.email,
+                hashed_password=hashed,
+                full_name=body.full_name,
+            )
+
+        return {
+            "message": "สมัครสมาชิกสำเร็จ — บัญชีของคุณรอการอนุมัติจากผู้ดูแลระบบ",
+            "user": user,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get(
     "/me",
     summary="ดูข้อมูลผู้ใช้ปัจจุบัน"
@@ -126,7 +188,7 @@ async def get_me(
 
 @router.post(
     "/register",
-    summary="สร้างผู้ใช้ใหม่ (Admin)"
+    summary="สร้างผู้ใช้ใหม่ (Admin สร้างโดยตรง — active ทันที ไม่ผ่าน pending)"
 )
 async def register_user(
     body: RegisterRequest,
@@ -189,10 +251,112 @@ async def register_user(
         }
 
 
+# =====================================================
+# Admin — approval queue / user management
+# =====================================================
+
+@router.get(
+    "/admin/pending-users",
+    summary="[Admin] รายชื่อผู้สมัครที่รออนุมัติ",
+)
+async def get_pending_users(
+    current_user: dict = Depends(require_admin),
+    pool: asyncpg.Pool = Depends(get_db_pool),
+):
+    async with pool.acquire() as conn:
+        pending = await list_pending_users(conn)
+    return {"total": len(pending), "pending_users": pending}
+
+
+@router.post(
+    "/admin/users/{user_id}/approve",
+    summary="[Admin] อนุมัติให้ user เข้าใช้งาน (login ได้)",
+)
+async def approve_pending_user(
+    user_id: int,
+    current_user: dict = Depends(require_admin),
+    pool: asyncpg.Pool = Depends(get_db_pool),
+):
+    async with pool.acquire() as conn:
+        approved = await approve_user(conn, user_id)
+
+    if not approved:
+        raise HTTPException(
+            status_code=404,
+            detail="ไม่พบ user นี้ หรือ user ถูกอนุมัติไปแล้ว",
+        )
+
+    return {"status": "approved", "user": approved}
+
+
+@router.get(
+    "/admin/users",
+    summary="[Admin] รายชื่อ user ทั้งหมด พร้อมสถานะ API key",
+)
+async def get_all_users(
+    current_user: dict = Depends(require_admin),
+    pool: asyncpg.Pool = Depends(get_db_pool),
+):
+    async with pool.acquire() as conn:
+        users = await list_all_users_with_key_status(conn)
+    return {"total": len(users), "users": users}
+
+
+@router.post(
+    "/admin/users/{user_id}/revoke-key",
+    summary="[Admin] ระงับการใช้งาน API key ของ user คนนี้ (account ยังอยู่)",
+)
+async def admin_revoke_user_key(
+    user_id: int,
+    current_user: dict = Depends(require_admin),
+    pool: asyncpg.Pool = Depends(get_db_pool),
+):
+    async with pool.acquire() as conn:
+        revoked = await admin_revoke_key_for_user(conn, user_id)
+
+    if not revoked:
+        raise HTTPException(
+            status_code=404,
+            detail="ไม่พบ API key ที่กำลังใช้งานอยู่สำหรับ user นี้",
+        )
+
+    return {"status": "key_revoked", "user_id": user_id}
+
+
+@router.delete(
+    "/admin/users/{user_id}",
+    summary="[Admin] ลบ user ทิ้งถาวร (key ที่ผูกอยู่ถูกลบตามไปด้วย) "
+            "— user ต้องสมัครใหม่เพื่อรับ key ใหม่",
+)
+async def admin_delete_user(
+    user_id: int,
+    current_user: dict = Depends(require_admin),
+    pool: asyncpg.Pool = Depends(get_db_pool),
+):
+    if current_user["user_id"] == user_id:
+        raise HTTPException(
+            status_code=400,
+            detail="ไม่สามารถลบบัญชีของตัวเองได้",
+        )
+
+    async with pool.acquire() as conn:
+        deleted = await delete_user(conn, user_id)
+
+    if not deleted:
+        raise HTTPException(status_code=404, detail="ไม่พบ user นี้")
+
+    return {"status": "deleted", "user_id": user_id}
+
+
+# =====================================================
+# Admin — generic API key management (unrelated to per-user keys,
+# kept from original for service/integration keys, e.g. Odoo)
+# =====================================================
+
 @router.post(
     "/api-keys",
     response_model=ApiKeyResponse,
-    summary="สร้าง API Key ใหม่ (Admin เท่านั้น)",
+    summary="สร้าง API Key ใหม่ (Admin เท่านั้น) — สำหรับ service/integration key",
 )
 async def create_new_api_key(
     body: CreateApiKeyRequest,
