@@ -1,4 +1,6 @@
 import re
+import secrets
+import bcrypt
 from fastapi import APIRouter, HTTPException, Depends, Security
 from pydantic import BaseModel, field_validator
 import asyncpg
@@ -79,6 +81,53 @@ class ScoringConfigRequest(BaseModel):
     max_deduct_per_trip: float = 50.0
     is_active: bool = True
     synced_from_odoo_at: Optional[datetime] = None
+
+
+# =============================================================
+# FDD v1.4 §13 — "MQTT username/password per device"
+#
+# ใช้แนวทาง EMQX PostgreSQL Authentication: EMQX query ตาราง devices
+# ตรงๆ ตอนบอร์ด CONNECT (ดูรายละเอียด SQL query ที่ต้องตั้งใน EMQX
+# Dashboard แยกต่างหาก ไม่ใช่ส่วนของโค้ดนี้) — endpoint นี้มีหน้าที่
+# แค่ "ออก" credential ใหม่ (username/password) แล้วเก็บเฉพาะ hash
+# ลง devices.mqtt_password_hash เท่านั้น ไม่เคยเก็บ plaintext ลง DB
+# =============================================================
+
+class MqttCredentialResponse(BaseModel):
+    device_id: str
+    mqtt_username: str
+    mqtt_password: str
+    warning: str = (
+        "รหัสผ่านนี้แสดงเพียงครั้งเดียว — กรุณาคัดลอกไปตั้งค่าในบอร์ดทันที "
+        "ระบบไม่มีการเก็บ plaintext ไว้ ถ้าทำหายต้องขอออกรหัสใหม่ "
+        "(ซึ่งจะทำให้รหัสเก่าใช้งานไม่ได้ทันที)"
+    )
+
+
+def generate_mqtt_credential(device_id: str) -> tuple[str, str]:
+    """
+    สร้าง credential สำหรับ MQTT authentication ของ device 1 ตัว
+
+    - plaintext password: สุ่มด้วย secrets.token_urlsafe (cryptographically
+      secure) ความยาวเพียงพอสำหรับใช้เป็นรหัสผ่าน MQTT
+    - password_hash: bcrypt (cost factor 12 — เท่ากับ pattern ที่ใช้ใน
+      app/auth/models.py สำหรับ user password) เก็บ hash นี้ลง
+      devices.mqtt_password_hash เท่านั้น ไม่เก็บ plaintext ลง DB เด็ดขาด
+
+    หมายเหตุ: EMQX PostgreSQL Authentication ฝั่ง Dashboard ต้องตั้งค่า
+    "Password Hash Algorithm" เป็น bcrypt ให้ตรงกับที่นี่ ไม่เช่นนั้น
+    device จะ authenticate ไม่ผ่านแม้ credential จะถูกต้อง
+
+    Returns:
+        (plaintext_password, password_hash)
+    """
+    plaintext_password = secrets.token_urlsafe(24)
+    password_hash = bcrypt.hashpw(
+        plaintext_password.encode(),
+        bcrypt.gensalt(12),
+    ).decode()
+
+    return plaintext_password, password_hash
 
 
 async def _register_single(
@@ -236,6 +285,61 @@ async def get_device_config(
             "status": "active" if row['active'] else "inactive",
             "date_update_latest": row['date_update_latest']
         }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post(
+    "/config_device/{device_id}/mqtt-credential",
+    response_model=MqttCredentialResponse,
+    summary="[FDD §13] ออก/หมุนเวียน MQTT username+password ให้ device 1 ตัว",
+)
+async def issue_mqtt_credential(
+    device_id: str,
+    pool: asyncpg.Pool = Depends(get_db_pool),
+    api_key: dict = Security(verify_api_key),
+):
+    """
+    ออก MQTT credential ใหม่ให้ device ตาม device_id
+
+    - รองรับทั้ง device เดิมที่มีอยู่แล้ว (update) และ device ใหม่ที่ยัง
+      ไม่เคยลงทะเบียนเลย (insert) ด้วย UPSERT เดียวกัน
+    - mqtt_username ตั้งเป็น device_id เสมอ (ตรงกับ EMQX query ที่ผูก
+      username = ${username} → devices.id)
+    - หลังเรียก endpoint นี้ credential เก่าของ device นั้นใช้ไม่ได้อีก
+      ทันที (ถูก overwrite ด้วย hash ใหม่ใน UPDATE เดียวกัน)
+    """
+    try:
+        device_id = _validate_device_id_format(device_id, "device_id")
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+    plaintext_password, password_hash = generate_mqtt_credential(device_id)
+
+    try:
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO devices (id, active, mqtt_username, mqtt_password_hash)
+                VALUES ($1, true, $2, $3)
+                ON CONFLICT (id)
+                DO UPDATE SET
+                    mqtt_username       = $2,
+                    mqtt_password_hash  = $3
+                """,
+                device_id,
+                device_id,
+                password_hash,
+            )
+
+        return MqttCredentialResponse(
+            device_id=device_id,
+            mqtt_username=device_id,
+            mqtt_password=plaintext_password,
+        )
 
     except HTTPException:
         raise
