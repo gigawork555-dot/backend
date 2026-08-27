@@ -1,0 +1,88 @@
+Docker & Test Commands Cheat Sheet
+
+- หลังแก้โค้ดทั่วไป*************
+
+    docker compose up -d --build
+
+- ถ้าต้องการหยุดก่อน*****************
+
+    docker compose down
+    docker compose up -d --build
+
+- หลังแก้ requirements.txt หรือ Dockerfile*****************
+
+    docker compose build --no-cache
+    docker compose up -d
+
+- ล้างฐานข้อมูลทั้งหมด (ลบ Volume)**********************
+
+    docker compose down -v
+    docker compose up -d
+
+ดู Logs*************************************
+
+- ทุก Service
+
+    docker compose logs -f
+
+- Backend
+
+    docker compose logs backend -f
+
+- ALL IN ดู log 2 อัน 
+docker logs -f fleet-backend 2>&1 
+
+Telemetry / MQTT / Error********************************************************
+
+- Windows PowerShell
+
+    docker compose logs backend -f | Select-String "TELEMETRY|MQTT|ERROR"
+
+Unit Test***************************************************************************
+
+- รันทั้งหมด
+
+    docker compose run --rm backend pytest
+
+- unit test
+
+docker compose run --rm backend pytest tests/test_event_processor.py -v -s
+docker compose run --rm backend pytest tests/test_score_calculator.py -v -s
+docker compose run --rm backend pytest tests/test_trip_manager.py -v -s 
+docker compose run --rm backend pytest tests/test_mqtt_subscriber.py -v -s
+
+- unit test api
+docker compose run --rm backend pytest tests/api_test_routes_vehicles.py -v -s
+docker compose run --rm backend pytest tests/api_test_routes_trips.py -v -s
+docker compose run --rm backend pytest tests/api_test_routes_reports.py -v -s
+docker compose run --rm backend pytest tests/api_test_routes_drivers.py -v -s
+docker compose run --rm backend pytest tests/api_test_routes_config.py -v -s
+docker compose run --rm backend pytest tests/api_test_auth_routes.py -v -s
+
+
+
+Coverage
+
+    docker compose run --rm backend pytest `
+  tests/test_score_calculator.py `
+  tests/test_event_processor.py `
+  tests/test_mqtt_subscriber.py `
+  tests/test_trip_manager.py `
+  --cov=app.services --cov-report=term-missing -q
+
+เข้า Container
+
+    docker compose exec backend bash
+
+ติดตั้ง package ภายใน container (ชั่วคราว)
+
+    pip install -r requirements.txt
+
+ทดสอบ mock_tier,py เช็ค tier คะแนนในทริปเดียวกัน
+docker compose run --rm --user root backend sh -c "pip install --no-cache-dir requests paho-mqtt && python mock_tier.py"
+
+สร้างaccount สำหรับ generate api key
+docker compose run --rm -e RUN_IN_DOCKER=1 backend python create_user.py
+
+
+
