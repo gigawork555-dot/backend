@@ -12,14 +12,14 @@ Helper กลางสำหรับ print ค่าจริงที่ได
     check_is("is_harsh_cornering",    result["is_harsh_cornering"],    False)
 
 ผลลัพธ์ตอนรันจะเห็นบรรทัดแบบนี้ก่อน assert ทุกตัว (ต้องใช้ -s):
-    🔎 is_harsh_braking      -> actual=True   | expected=True   ✅
+    🔎 is_harsh_braking      -> actual=True   | expected=True   
 """
 
 
 def check(label, actual, expected):
     """เทียบด้วย == พร้อม print ค่าจริง/ค่าคาดหวังก่อนเสมอ"""
     ok = actual == expected
-    mark = "✅" if ok else "❌"
+    mark = "true" if ok else "false"
     print(f"  🔎 {label:<28} -> actual={actual!r:<12} expected={expected!r:<12} {mark}")
     assert ok, f"{label} FAILED: actual={actual!r}, expected={expected!r}"
 
@@ -27,7 +27,7 @@ def check(label, actual, expected):
 def check_is(label, actual, expected):
     """เทียบด้วย is (สำหรับ True/False/None) พร้อม print ค่าจริง/ค่าคาดหวังก่อนเสมอ"""
     ok = actual is expected
-    mark = "✅" if ok else "❌"
+    mark = "true" if ok else "false"
     print(f"  🔎 {label:<28} -> actual={actual!r:<12} expected={expected!r:<12} {mark}")
     assert ok, f"{label} FAILED: actual={actual!r}, expected={expected!r} (is-check)"
 
@@ -35,7 +35,7 @@ def check_is(label, actual, expected):
 def check_approx(label, actual, expected, abs_tol=1e-6):
     """เทียบตัวเลขทศนิยมแบบ approx พร้อม print"""
     ok = abs(actual - expected) <= abs_tol
-    mark = "✅" if ok else "❌"
+    mark = "true" if ok else "false"
     print(f"  🔎 {label:<28} -> actual={actual!r:<12} expected≈{expected!r:<12} {mark}")
     assert ok, f"{label} FAILED: actual={actual!r}, expected≈{expected!r}"
 
@@ -43,6 +43,6 @@ def check_approx(label, actual, expected, abs_tol=1e-6):
 def check_range(label, actual, low, high):
     """เช็คว่าค่าอยู่ในช่วง [low, high] พร้อม print"""
     ok = low <= actual <= high
-    mark = "✅" if ok else "❌"
+    mark = "true" if ok else "false"
     print(f"  🔎 {label:<28} -> actual={actual!r:<12} expected in [{low}, {high}] {mark}")
     assert ok, f"{label} FAILED: actual={actual!r} not in [{low}, {high}]"

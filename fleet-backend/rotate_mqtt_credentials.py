@@ -48,7 +48,7 @@ DEVICE_COUNT = int(os.environ.get("DEVICE_COUNT", "10"))
 def rotate_all() -> None:
     if not API_KEY:
         print(
-            "❌ ไม่พบ APIKEY — กรุณาตั้ง environment variable APIKEY "
+            "ไม่พบ APIKEY — กรุณาตั้ง environment variable APIKEY "
             "ก่อนรันสคริปต์นี้ (ต้องเป็น API key ที่ active อยู่จริง)"
         )
         sys.exit(1)
@@ -57,7 +57,7 @@ def rotate_all() -> None:
         f"{DEVICE_PREFIX}{str(n).zfill(3)}" for n in range(1, DEVICE_COUNT + 1)
     ]
 
-    print(f"🔐 เริ่ม rotate MQTT credential ให้ {len(device_ids)} device: "
+    print(f"เริ่ม rotate MQTT credential ให้ {len(device_ids)} device: "
           f"{device_ids[0]} ... {device_ids[-1]}")
     print(f"    Backend: {BASE_URL}")
     print("=" * 72)
@@ -71,7 +71,7 @@ def rotate_all() -> None:
                 resp = client.post(f"/api/v1/config_device/{device_id}/mqtt-credential")
 
                 if resp.status_code != 200:
-                    print(f"❌ {device_id}: HTTP {resp.status_code} — {resp.text}")
+                    print(f"{device_id}: HTTP {resp.status_code} — {resp.text}")
                     failed.append(device_id)
                     continue
 
@@ -79,22 +79,22 @@ def rotate_all() -> None:
                 results.append(data)
 
                 print(
-                    f"✅ {data['device_id']:<10} "
+                    f"{data['device_id']:<10} "
                     f"username={data['mqtt_username']:<10} "
                     f"password={data['mqtt_password']}"
                 )
 
             except Exception as e:
-                print(f"❌ {device_id}: เชื่อมต่อ backend ล้มเหลว — {e}")
+                print(f"{device_id}: เชื่อมต่อ backend ล้มเหลว — {e}")
                 failed.append(device_id)
 
     print("=" * 72)
     print(f"สรุป: สำเร็จ {len(results)} | ล้มเหลว {len(failed)}")
     if failed:
-        print(f"⚠️  device ที่ rotate ไม่สำเร็จ: {', '.join(failed)}")
+        print(f"device ที่ rotate ไม่สำเร็จ: {', '.join(failed)}")
 
     print(
-        "\n⚠️  คัดลอกรหัสผ่านด้านบนไปตั้งค่าในบอร์ดทันที (ผ่าน "
+        "\nคัดลอกรหัสผ่านด้านบนไปตั้งค่าในบอร์ดทันที (ผ่าน "
         "nvsWriteCredentials() ใน security.h) — ระบบจะไม่แสดงค่านี้ซ้ำอีก "
         "และไม่มีการเก็บ plaintext ไว้ที่ไหนเลยหลังจากนี้"
     )

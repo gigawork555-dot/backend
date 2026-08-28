@@ -88,7 +88,7 @@ def hash_password(plain: str) -> str:
 
 async def create_users():
     conn = await asyncpg.connect(**DB_CONFIG)
-    print(f"✅ เชื่อมต่อฐานข้อมูล {DB_CONFIG['database']}@{DB_CONFIG['host']}:{DB_CONFIG['port']} สำเร็จ\n")
+    print(f"เชื่อมต่อฐานข้อมูล {DB_CONFIG['database']}@{DB_CONFIG['host']}:{DB_CONFIG['port']} สำเร็จ\n")
 
     created, skipped, failed = 0, 0, 0
 
@@ -107,7 +107,7 @@ async def create_users():
             )
 
             if existing:
-                print(f"⏭️  ข้าม '{username}' — มีอยู่แล้วในระบบ (id={existing['id']})")
+                print(f"ข้าม '{username}' — มีอยู่แล้วในระบบ (id={existing['id']})")
                 skipped += 1
                 continue
 
@@ -123,13 +123,13 @@ async def create_users():
                     username, email, password_hash, full_name, role,
                 )
                 print(
-                    f"✅ สร้างสำเร็จ: id={row['id']} username={row['username']} "
+                    f"สร้างสำเร็จ: id={row['id']} username={row['username']} "
                     f"role={row['role']} created_at={row['created_at']}"
                 )
                 created += 1
 
             except Exception as e:
-                print(f"❌ สร้าง '{username}' ล้มเหลว: {e}")
+                print(f"สร้าง '{username}' ล้มเหลว: {e}")
                 failed += 1
 
     finally:
@@ -142,5 +142,5 @@ if __name__ == "__main__":
     try:
         asyncio.run(create_users())
     except Exception as e:
-        print(f"❌ เชื่อมต่อหรือรันสคริปต์ล้มเหลว: {e}")
+        print(f"เชื่อมต่อหรือรันสคริปต์ล้มเหลว: {e}")
         sys.exit(1)

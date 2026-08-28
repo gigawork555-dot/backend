@@ -243,7 +243,7 @@ def test_calculate_severity_always_in_unit_interval():
 def test_detect_harsh_brake_triggers_below_threshold():
     event, severity = _detect_harsh_brake({"ax": -0.5}, cfg())
     check("event", event, "harsh_brake")
-    print(f"  🔎 severity(>0 expected)      -> actual={severity!r}")
+    print(f"   severity(>0 expected)      -> actual={severity!r}")
     assert severity > 0
 
 
@@ -276,7 +276,7 @@ def test_detect_harsh_brake_missing_ax_no_trigger():
 def test_detect_harsh_acceleration_triggers_above_threshold():
     event, severity = _detect_harsh_acceleration({"ax": 0.5}, cfg())
     check("event", event, "harsh_acceleration")
-    print(f"  🔎 severity(>0 expected)      -> actual={severity!r}")
+    print(f"   severity(>0 expected)      -> actual={severity!r}")
     assert severity > 0
 
 
@@ -362,7 +362,7 @@ def test_detect_bump_normal_gravity_no_trigger():
 def test_detect_speeding_triggers_above_threshold():
     event, severity = _detect_speeding({"speed": 110}, cfg())
     check("event", event, "speeding")
-    print(f"  🔎 severity(>0 expected)      -> actual={severity!r}")
+    print(f"   severity(>0 expected)      -> actual={severity!r}")
     assert severity > 0
 
 

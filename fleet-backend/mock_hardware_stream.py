@@ -27,7 +27,7 @@ def generate_signed_payload(data: dict, secret_key: str) -> str:
     return final_signed_str
 
 async def main():
-    print("🚀 เริ่มระบบจำลองการสตรีมข้อมูลจากกล่อง GPS (KTC-Test)...")
+    print("เริ่มระบบจำลองการสตรีมข้อมูลจากกล่อง GPS (KTC-Test)...")
 
     client = mqtt_client.Client(callback_api_version=mqtt_client.CallbackAPIVersion.VERSION2)
     client.connect(MQTT_HOST, MQTT_PORT)
@@ -37,7 +37,7 @@ async def main():
     base_ts = int(time.time())
 
     # ── Event 1: Ignition ON ──────────────────────────────────────
-    print("\n🎬 [Event 1/4] สตาร์ทรถยนต์เพื่อเปิดทริปการเดินทาง...")
+    print("\n[Event 1/4] สตาร์ทรถยนต์เพื่อเปิดทริปการเดินทาง...")
     start_payload = {
         "ts": base_ts, "device_id": "KTC-012",
         "lat": 13.7563, "lon": 100.5018,
@@ -54,7 +54,7 @@ async def main():
     # ── Event 2: Speeding (ใช้ ts จริง ไม่ต้องจำลองตี 2) ──────────
     # หมายเหตุ: ถ้าอยากทดสอบ night multiplier (คะแนนหักเพิ่มช่วงตี 0-4)
     # ให้รันตอนตี 0-4 จริงๆ หรือแก้ ts ใน DB โดยตรงหลังทดสอบ
-    print("🚨 [Event 2/4] วิ่งความเร็ว 110 กม./ชม. เกินเกณฑ์...")
+    print("[Event 2/4] วิ่งความเร็ว 110 กม./ชม. เกินเกณฑ์...")
     overspeed_payload = start_payload.copy()
     overspeed_payload.update({
         "ts": base_ts + 10,
@@ -67,7 +67,7 @@ async def main():
     await asyncio.sleep(2)
 
     # ── Event 3: Harsh Brake ที่ speed < 20 → ต้อง exempt ──────────
-    print("🚧 [Event 3/4] เบรกกะทันหันในเขตก่อสร้าง (speed 15 km/h → exempt)...")
+    print("[Event 3/4] เบรกกะทันหันในเขตก่อสร้าง (speed 15 km/h → exempt)...")
     braking_payload = start_payload.copy()
     braking_payload.update({
         "ts": base_ts + 20,
@@ -82,7 +82,7 @@ async def main():
     await asyncio.sleep(2)
 
     # ── Event 4: Ignition OFF → Trip End ────────────────────────────
-    print("🏁 [Event 4/4] ดับเครื่องยนต์ ปิดทริปและประมวลผลคะแนน...")
+    print("[Event 4/4] ดับเครื่องยนต์ ปิดทริปและประมวลผลคะแนน...")
     stop_payload = start_payload.copy()
     stop_payload.update({
         "ts": base_ts + 30,
@@ -97,7 +97,7 @@ async def main():
     await asyncio.sleep(3)
     client.loop_stop()
     client.disconnect()
-    print("\n✅ ยิงสตรีมข้อมูลทดสอบเสร็จสมบูรณ์!")
+    print("\nยิงสตรีมข้อมูลทดสอบเสร็จสมบูรณ์!")
 
 if __name__ == "__main__":
     asyncio.run(main())

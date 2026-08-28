@@ -318,16 +318,16 @@ def test_fleet_live_accepts_valid_key_and_streams(sse_client, sse_pool):
     with sse_client.stream("GET", "/api/v1/fleet/live") as resp:
         check("resp.status_code", resp.status_code, 200)
         content_type = resp.headers["content-type"]
-        print(f"  🔎 {'content-type contains text/event-stream':<28} -> actual={content_type!r}")
+        print(f"   {'content-type contains text/event-stream':<28} -> actual={content_type!r}")
         assert "text/event-stream" in content_type
 
         chunk_iter = resp.iter_lines()
         first_line = next(chunk_iter)
-        print(f"  🔎 {'first_line startswith data:':<28} -> actual={first_line!r}")
+        print(f"   {'first_line startswith data:':<28} -> actual={first_line!r}")
         assert first_line.startswith("data:")
 
     sse_pool.fetch.assert_awaited()
-    print("  🔎 sse_pool.fetch awaited        -> actual=True expected=True ✅")
+    print("   sse_pool.fetch awaited        -> actual=True expected=True")
 
 
 def test_fleet_live_wrong_key_rejected_before_pool_used(sse_client, sse_pool, monkeypatch):
@@ -339,7 +339,7 @@ def test_fleet_live_wrong_key_rejected_before_pool_used(sse_client, sse_pool, mo
 
     check("resp.status_code (wrong key)", resp.status_code, 403)
     sse_pool.fetch.assert_not_awaited()
-    print("  🔎 sse_pool.fetch NOT awaited    -> actual=True expected=True ✅")
+    print("   sse_pool.fetch NOT awaited    -> actual=True expected=True")
 
 
 if __name__ == "__main__":

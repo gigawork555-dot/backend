@@ -123,7 +123,7 @@ async def test_get_active_scoring_config_maps_db_columns_to_calculator_keys():
     check("config['speeding_kmh_over']", config["speeding_kmh_over"], 20.0)
     check("config['idle_min_threshold']", config["idle_min_threshold"], 5.0)
     check("config['max_deduct_per_trip']", config["max_deduct_per_trip"], 50.0)
-    print(f"  🔎 conn.fetchrow await count     -> actual={conn.fetchrow.await_count} expected=1")
+    print(f"   conn.fetchrow await count     -> actual={conn.fetchrow.await_count} expected=1")
     conn.fetchrow.assert_awaited_once()
 
 
@@ -207,7 +207,7 @@ def test_haversine_km_symmetric_regardless_of_point_order():
     d1 = _haversine_km(13.75, 100.50, 18.79, 98.98)
     d2 = _haversine_km(18.79, 98.98, 13.75, 100.50)
     check_approx("_haversine_km(A->B) vs (B->A)", d1, d2, abs_tol=1e-9)
-    print(f"  🔎 distance > 0                 -> actual={d1!r}")
+    print(f"   distance > 0                 -> actual={d1!r}")
     assert d1 > 0
 
 
@@ -301,7 +301,7 @@ async def test_finalize_trip_skips_when_too_few_telemetry_points():
 
     await _finalize_trip(pool, "KTC-001", start, end)
 
-    print(f"  🔎 conn.execute await count      -> actual={conn.execute.await_count} expected=0 (skipped)")
+    print(f"   conn.execute await count      -> actual={conn.execute.await_count} expected=0 (skipped)")
     conn.execute.assert_not_awaited()
 
 
@@ -347,7 +347,7 @@ async def test_finalize_trip_inserts_trip_log_with_computed_metrics():
 
     await _finalize_trip(pool, "KTC-001", start, end)
 
-    print(f"  🔎 conn.execute await count      -> actual={conn.execute.await_count} expected=1")
+    print(f"   conn.execute await count      -> actual={conn.execute.await_count} expected=1")
     conn.execute.assert_awaited_once()
     _, call_args, _ = conn.execute.mock_calls[0]
     inserted = call_args[1:]
@@ -404,7 +404,7 @@ async def test_handle_telemetry_ignition_off_then_on_within_debounce_cancels_fin
 
     await asyncio.sleep(0.3)
 
-    print(f"  🔎 finalize_mock await count     -> actual={finalize_mock.await_count} expected=0")
+    print(f"   finalize_mock await count     -> actual={finalize_mock.await_count} expected=0")
     finalize_mock.assert_not_awaited()
 
 
@@ -420,12 +420,12 @@ async def test_handle_telemetry_ignition_off_debounce_elapses_calls_finalize(mon
     await handle_telemetry(pool, {"device_id": device_id, "ignition": True, "ts": 1750000000})
     await handle_telemetry(pool, {"device_id": device_id, "ignition": False, "ts": 1750000010})
 
-    print(f"  🔎 device_id in TRIP_END_TASKS   -> actual={device_id in TRIP_END_TASKS} expected=True")
+    print(f"   device_id in TRIP_END_TASKS   -> actual={device_id in TRIP_END_TASKS} expected=True")
     assert device_id in TRIP_END_TASKS
 
     await asyncio.sleep(0.3)
 
-    print(f"  🔎 finalize_mock await count     -> actual={finalize_mock.await_count} expected=1")
+    print(f"   finalize_mock await count     -> actual={finalize_mock.await_count} expected=1")
     finalize_mock.assert_awaited_once()
     check("state.is_running (after finalize)", TRIP_STATE[device_id].is_running, False)
     check("device_id in TRIP_END_TASKS (after finalize)", device_id in TRIP_END_TASKS, False)
@@ -446,7 +446,7 @@ async def test_handle_telemetry_ignition_off_twice_does_not_schedule_second_task
     await handle_telemetry(pool, {"device_id": device_id, "ignition": False, "ts": 1750000011})
     second_task = TRIP_END_TASKS[device_id]
 
-    print(f"  🔎 first_task is second_task     -> actual={first_task is second_task} expected=True")
+    print(f"   first_task is second_task     -> actual={first_task is second_task} expected=True")
     assert first_task is second_task
 
     first_task.cancel()

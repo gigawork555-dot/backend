@@ -439,7 +439,7 @@ async def test_store_telemetry_raises_and_logs_on_db_error():
 
     with pytest.raises(RuntimeError):
         await store_telemetry(pool, "KTC-001", 101, {"ts": 1750000000, "ignition": True})
-    print("  🔎 store_telemetry raised RuntimeError -> actual=True expected=True ✅")
+    print("   store_telemetry raised RuntimeError -> actual=True expected=True ✅")
 
 
 # =================================================================
@@ -465,9 +465,9 @@ async def test_handle_telemetry_bound_vehicle_calls_trip_manager(monkeypatch):
 
     await handle_telemetry(pool, "KTC-001", payload)
 
-    print(f"  🔎 store_mock await count        -> actual={store_mock.await_count} expected=1")
+    print(f"   store_mock await count        -> actual={store_mock.await_count} expected=1")
     store_mock.assert_awaited_once()
-    print(f"  🔎 trip_mock await count         -> actual={trip_mock.await_count} expected=1")
+    print(f"   trip_mock await count         -> actual={trip_mock.await_count} expected=1")
     trip_mock.assert_awaited_once()
 
     _, kwargs = trip_mock.await_args
@@ -490,11 +490,11 @@ async def test_handle_telemetry_unbound_vehicle_auto_registers_and_skips_trip(mo
 
     await handle_telemetry(pool, "KTC-UNBOUND", payload)
 
-    print(f"  🔎 pool.execute await count      -> actual={pool.execute.await_count} expected=1 (auto-register)")
+    print(f"   pool.execute await count      -> actual={pool.execute.await_count} expected=1 (auto-register)")
     pool.execute.assert_awaited_once()
-    print(f"  🔎 store_mock await count        -> actual={store_mock.await_count} expected=1")
+    print(f"   store_mock await count        -> actual={store_mock.await_count} expected=1")
     store_mock.assert_awaited_once()
-    print(f"  🔎 trip_mock await count         -> actual={trip_mock.await_count} expected=0 (unbound)")
+    print(f"   trip_mock await count         -> actual={trip_mock.await_count} expected=0 (unbound)")
     trip_mock.assert_not_awaited()
 
 
@@ -511,7 +511,7 @@ async def test_handle_telemetry_auto_register_failure_is_swallowed(monkeypatch):
 
     await handle_telemetry(pool, "KTC-BROKEN", {"ts": 1750000000, "ignition": True})
 
-    print(f"  🔎 store_mock await count        -> actual={store_mock.await_count} expected=1 (error swallowed)")
+    print(f"   store_mock await count        -> actual={store_mock.await_count} expected=1 (error swallowed)")
     store_mock.assert_awaited_once()
 
 
@@ -560,9 +560,9 @@ async def test_handle_telemetry_propagates_fixed_ts_to_trip_manager(monkeypatch)
     _, kwargs = trip_mock.await_args
     propagated_ts = kwargs["payload"]["ts"]
 
-    print(f"  🔎 propagated_ts != raw_boot_ts  -> actual={propagated_ts!r} != {raw_boot_ts!r}")
+    print(f"   propagated_ts != raw_boot_ts  -> actual={propagated_ts!r} != {raw_boot_ts!r}")
     assert propagated_ts != raw_boot_ts
-    print(f"  🔎 propagated_ts > 2020 epoch    -> actual={propagated_ts!r} expected > 1577836800")
+    print(f"   propagated_ts > 2020 epoch    -> actual={propagated_ts!r} expected > 1577836800")
     assert propagated_ts > 1577836800
 
 
@@ -617,7 +617,7 @@ async def test_handle_telemetry_swallows_unexpected_exception(monkeypatch):
     pool.fetchval = AsyncMock(side_effect=RuntimeError("boom"))
 
     await handle_telemetry(pool, "KTC-ERR", {"ts": 1750000000, "ignition": True})
-    print("  🔎 handle_telemetry did not raise -> actual=True expected=True ✅")
+    print("   handle_telemetry did not raise -> actual=True expected=True ✅")
 
 
 # =================================================================
@@ -634,7 +634,7 @@ async def test_process_message_async_success_path(monkeypatch):
     await mqtt_subscriber._process_message_async("KTC-001", {"ts": 1750000000})
 
     handle_mock.assert_awaited_once_with(fake_pool, "KTC-001", {"ts": 1750000000})
-    print("  🔎 handle_mock called with correct args -> ✅")
+    print("   handle_mock called with correct args -> ✅")
 
 
 async def test_process_message_async_swallows_exception(monkeypatch):
@@ -642,7 +642,7 @@ async def test_process_message_async_swallows_exception(monkeypatch):
         mqtt_subscriber, "get_db_pool", AsyncMock(side_effect=RuntimeError("pool not ready"))
     )
     await mqtt_subscriber._process_message_async("KTC-001", {"ts": 1750000000})
-    print("  🔎 _process_message_async did not raise -> actual=True expected=True ✅")
+    print("   _process_message_async did not raise -> actual=True expected=True ✅")
 
 
 # =================================================================
@@ -700,7 +700,7 @@ def test_on_message_drops_when_event_loop_not_ready():
     msg = _make_msg("kotchasaan/fleet/KTC-001/telemetry", {"ts": 1750000000})
 
     on_message(None, None, msg)
-    print("  🔎 on_message did not raise (loop None) -> actual=True expected=True ✅")
+    print("   on_message did not raise (loop None) -> actual=True expected=True ✅")
 
 
 def test_on_message_dispatches_valid_payload(monkeypatch):
@@ -744,7 +744,7 @@ def test_on_message_invalid_json_does_not_raise(monkeypatch):
     msg.properties = None
 
     on_message(None, None, msg)
-    print("  🔎 on_message did not raise (bad JSON) -> actual=True expected=True ✅")
+    print("   on_message did not raise (bad JSON) -> actual=True expected=True ✅")
 
 
 def test_on_message_hmac_failure_drops_message(monkeypatch):
@@ -766,7 +766,7 @@ def test_on_message_hmac_failure_drops_message(monkeypatch):
 
     on_message(None, None, msg)
 
-    print(f"  🔎 dispatch_mock call count      -> actual={dispatch_mock.call_count} expected=0 (dropped)")
+    print(f"   dispatch_mock call count      -> actual={dispatch_mock.call_count} expected=0 (dropped)")
     dispatch_mock.assert_not_called()
 
 
@@ -819,11 +819,11 @@ def test_on_message_done_callback_logs_when_future_raised(monkeypatch):
 
     fut.exception.return_value = RuntimeError("processing exploded")
     done_callback(fut)
-    print("  🔎 done_callback(error future) did not raise -> actual=True expected=True ✅")
+    print("   done_callback(error future) did not raise -> actual=True expected=True ✅")
 
     fut.exception.return_value = None
     done_callback(fut)
-    print("  🔎 done_callback(clean future) did not raise -> actual=True expected=True ✅")
+    print("   done_callback(clean future) did not raise -> actual=True expected=True ✅")
 
 
 def test_on_message_unicode_decode_error_handled(monkeypatch):
@@ -837,7 +837,7 @@ def test_on_message_unicode_decode_error_handled(monkeypatch):
     msg.properties = None
 
     on_message(None, None, msg)
-    print("  🔎 on_message did not raise (bad unicode) -> actual=True expected=True ✅")
+    print("   on_message did not raise (bad unicode) -> actual=True expected=True ✅")
 
 
 def test_on_message_generic_exception_handled(monkeypatch):
@@ -851,7 +851,7 @@ def test_on_message_generic_exception_handled(monkeypatch):
     msg.properties = None
 
     on_message(None, None, msg)
-    print("  🔎 on_message did not raise (topic=None) -> actual=True expected=True ✅")
+    print("   on_message did not raise (topic=None) -> actual=True expected=True ✅")
 
 
 # =================================================================
@@ -886,7 +886,7 @@ async def test_mqtt_subscriber_task_connects_detects_loss_and_cancels_cleanly(mo
     except asyncio.CancelledError:
         pass
 
-    print(f"  🔎 fake_client.connect called    -> actual={fake_client.connect.called} expected=True")
+    print(f"   fake_client.connect called    -> actual={fake_client.connect.called} expected=True")
     fake_client.connect.assert_called()
     fake_client.loop_start.assert_called()
     fake_client.loop_stop.assert_called()

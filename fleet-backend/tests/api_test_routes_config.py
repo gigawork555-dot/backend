@@ -149,25 +149,25 @@ def test_validate_device_id_format_none_passthrough():
 def test_validate_device_id_format_rejects_numeric_only():
     with pytest.raises(ValueError, match="KTC-XXX"):
         _validate_device_id_format("1")
-    print("  🔎 ValueError raised (numeric-only '1') -> actual=True expected=True ✅")
+    print("  🔎 ValueError raised (numeric-only '1') -> actual=True expected=True")
 
 
 def test_validate_device_id_format_rejects_wrong_digit_count():
     with pytest.raises(ValueError):
         _validate_device_id_format("KTC-01")
-    print("  🔎 ValueError raised (wrong digit count) -> actual=True expected=True ✅")
+    print("  🔎 ValueError raised (wrong digit count) -> actual=True expected=True")
 
 
 def test_validate_device_id_format_rejects_missing_prefix():
     with pytest.raises(ValueError):
         _validate_device_id_format("XYZ-001")
-    print("  🔎 ValueError raised (missing prefix)   -> actual=True expected=True ✅")
+    print("  🔎 ValueError raised (missing prefix)   -> actual=True expected=True")
 
 
 def test_validate_device_id_format_error_message_includes_field_name():
     with pytest.raises(ValueError, match="new_device_id"):
         _validate_device_id_format("bad", field_name="new_device_id")
-    print("  🔎 ValueError message includes field_name -> actual=True expected=True ✅")
+    print("  🔎 ValueError message includes field_name -> actual=True expected=True")
 
 
 # =================================================================

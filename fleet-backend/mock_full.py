@@ -328,7 +328,7 @@ def generate_signed_payload(data: dict, secret_key: str) -> str:
 # Main loop — round-robin ส่งข้อมูล 10 บอร์ดไม่จบ
 # =====================================================
 async def main():
-    print("🚀 เริ่มระบบจำลองการสตรีมข้อมูลจากกล่อง GPS (10 บอร์ด, round-robin)...")
+    print("เริ่มระบบจำลองการสตรีมข้อมูลจากกล่อง GPS (10 บอร์ด, round-robin)...")
     print(f"    MQTT: {MQTT_HOST}:{MQTT_PORT}")
     print(f"    Devices: {[p.device_id for p in MOCK_PROFILES]}")
 
@@ -364,12 +364,12 @@ async def main():
             await asyncio.sleep(PUBLISH_INTERVAL_SECONDS)
 
     except (KeyboardInterrupt, asyncio.CancelledError):
-        print("\n🛑 หยุดการสตรีมข้อมูล (ผู้ใช้สั่งยกเลิก)")
+        print("\nหยุดการสตรีมข้อมูล (ผู้ใช้สั่งยกเลิก)")
 
     finally:
         client.loop_stop()
         client.disconnect()
-        print("✅ ปิดการเชื่อมต่อ MQTT เรียบร้อย")
+        print("ปิดการเชื่อมต่อ MQTT เรียบร้อย")
 
 
 if __name__ == "__main__":
